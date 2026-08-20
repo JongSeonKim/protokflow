@@ -1,0 +1,76 @@
+default_language_version:
+    python: '>= 3.14'
+
+repos:
+  - repo: local
+    hooks:
+      - id: end-of-file-fixer
+        name: end-of-file-fixer
+        entry: uv run end-of-file-fixer
+        language: system
+        types: [text]
+
+      - id: check-json
+        name: check-json
+        entry: uv run check-json
+        language: system
+        types: [json]
+
+      - id: check-yaml
+        name: check-yaml
+        entry: uv run check-yaml
+        language: system
+        types: [yaml]
+
+      - id: check-toml
+        name: check-toml
+        entry: uv run check-toml
+        language: system
+        types: [toml]
+
+      - id: tombi-lint
+        name: tombi-lint
+        entry: uv run tombi lint --offline
+        language: system
+        files: \.toml$
+
+      - id: tombi-format
+        name: tombi-format
+        entry: uv run tombi format --offline
+        language: system
+        files: \.toml$
+
+      - id: ruff-check
+        name: ruff-check
+        entry: uv run ruff check --fix --unsafe-fixes
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+
+      - id: uv-lock
+        name: uv-lock
+        entry: uv lock --check
+        language: system
+        files: (pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+
+      - id: uv-export
+        name: uv-export
+        entry: uv export --format requirements.txt -o requirements.txt --no-hashes
+        language: system
+        files: (pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+
+      - id: mypy
+        name: mypy
+        entry: uv run mypy backend tests --show-error-codes
+        language: system
+        pass_filenames: false
+        # pass_filenames is false, so this only decides whether the hook runs at all.
+        # pyproject.toml is included because [tool.mypy] and dependency pins change results.
+        files: ^(backend|tests)/.*\.py$|^pyproject\.toml$

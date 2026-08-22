@@ -14,10 +14,10 @@ execution: code
 ## Goal Capsule
 
 ### Objective
-AI 코딩 에이전트(Claude Desktop, Cursor, Codex 등)와 인간 엔지니어가 단 1회의 도구 호출로 3계층 디자인 토큰 기반 UI 후보군을 생성하고, 로컬 브라우저에서 초저지연(<16ms) 핫리로드로 나란히 비교·수정하며, 무오류 React/Tailwind 프로덕션 코드로 즉시 내보낼 수 있는 독립형 프로토타이핑 엔진을 구축한다.
+AI 코딩 에이전트(Claude Desktop, Cursor, Codex 등)와 인간 엔지니어가 단 1회의 도구 호출로 `DESIGN.md` 기반 다중 워크스페이스 및 3계층 디자인 토큰 기반 UI 후보군을 생성하고, 로컬 브라우저에서 초저지연(<16ms) 핫리로드로 나란히 비교·수정하며, 무오류 React/Tailwind 프로덕션 코드로 즉시 내보낼 수 있는 독립형 프로토타이핑 엔진을 구축한다.
 
 ### Means
-전송 프로토콜과 독립된 순수 Python 3계층 토큰 엔진(`protokflow.core`)을 구축하고, 상위에 MCP stdio 도구 어댑터(`protokflow.adapters.mcp`)와 Starlette/FastAPI ASGI 웹 프리뷰 어댑터(`protokflow.adapters.http`)를 분리 제공하는 하이브리드 코어 아키텍처.
+전송 프로토콜과 독립된 순수 Python 3계층 토큰 엔진(`protokflow.core`) 및 SQLite/SQLModel 기반 `DESIGN.md` 워크스페이스 저장소를 구축하고, 상위에 MCP stdio 도구 어댑터(`protokflow.adapters.mcp`)와 Starlette/FastAPI ASGI 웹 프리뷰 및 관리 어댑터(`protokflow.adapters.http`)를 분리 제공하는 하이브리드 코어 아키텍처.
 
 ### Product Authority
 이 계획서는 `protokflow`의 코어 토큰 해석 엔진, MCP 및 HTTP 듀얼 어댑터 인터페이스, 브라우저 실시간 프리뷰 쉘, React/Tailwind 코드 추출 사양을 규정한다. 외부 클라우드 디자인 툴 실시간 양방향 동기화나 백엔드 데이터 목킹은 범위 외로 정의한다.
@@ -30,7 +30,7 @@ None.
 ## Product Contract
 
 ### Summary
-Protokflow는 Meta Astryx 기반의 3계층 디자인 토큰(Foundations → Components → Patterns)을 정적 HTML/CSS로 컴파일하는 순수 Python 코어 엔진(`protokflow.core`)과, 에이전트용 MCP 도구 어댑터 및 브라우저용 ASGI 프리뷰 서버를 얇은 래퍼로 제공하는 하이브리드 UI 프로토타이핑 툴킷이다. 에이전트에게는 `uvx protokflow mcp`를 통한 제로 컨피그 도구 호출을, 사용자에게는 CSS 변수 웹소켓 패치를 통한 16ms 이내 초저지연 실시간 핫리로드 비교 환경을 제공한다.
+Protokflow는 Google Labs의 `DESIGN.md` 표준 포맷(YAML Front Matter + Markdown)을 수용하는 다중 워크스페이스 기반 3계층 디자인 토큰(Foundations → Components → Patterns) 런타임 엔진(`protokflow.core`)과, 에이전트용 MCP 도구 어댑터 및 브라우저용 ASGI 프리뷰/관리 서버를 제공하는 하이브리드 UI 프로토타이핑 툴킷이다. SQLite 기본 내장(SQLModel/SQLAlchemy로 Postgres 확장 가능)으로 워크스페이스, 토큰 및 프로토타입 세션을 관리하며, 웹 UI(`/admin`)를 통한 `DESIGN.md` 편집과 에이전트 도구 호출을 완벽히 연동한다.
 
 ### Problem Frame
 기존의 로컬 레포지토리 종속형 디자인 하니스(`design-harness`)는 단일 화면 후보를 생성하기 위해 20회 이상의 세부 CLI 호출과 엄격한 SHA-256 해시 추적, 임대(lease) 관리 등 지나치게 많은 트랜잭션 의례를 요구했다. 이로 인해 AI 코딩 에이전트가 화면 프로토타입을 빠르게 생성·탐색·비교하는 과정에서 심각한 병목과 파싱 에러를 겪었다. 또한 전송 계층 선택 시 "순수 MCP"는 웹 프리뷰 백그라운드 프로세스 및 포트 충돌 관리에 취약하고, "순수 FastAPI"는 에이전트의 직접 도구 호출에 불필요한 HTTP 통신 의례를 요구하는 문제가 있었다.
@@ -41,6 +41,7 @@ Protokflow는 Meta Astryx 기반의 3계층 디자인 토큰(Foundations → Com
 - **KD3 (Zero-Compile CSS Custom Property Injection for <16ms Hot-Reload)**: Astryx 토큰을 브라우저 CSS 변수로 매핑하고, `patch_tokens` 호출 시 웹소켓으로 토큰 델타를 주입하여 전체 HTML 재렌더링 없이 스타일을 즉시 모핑한다. `(session-settled: user-approved — chosen over full HTML re-render: guarantees sub-16ms latency and preserves input focus/scroll)` `Governs R10`
 - **KD4 (Single-Source Pydantic v2 Schemas for MCP Tools & OpenAPI Specs)**: 토큰 계층 및 5종 도구 인터페이스를 Pydantic v2 모델로 정의하여 MCP JSONSchema와 FastAPI Swagger 문서를 자동 생성한다. `(session-settled: user-approved — chosen over duplicated schema definitions: prevents schema drift)` `Governs R5, R12`
 - **KD5 (Deterministic AST-Free Template Swizzle Exporter)**: `export_prototype`은 사전 검증된 컴포넌트 템플릿에 토큰을 1:1 치환하는 스위즐(swizzle) 방식으로 100% 문법 무결한 React/Tailwind 코드를 방출한다. `Governs R14, R15`
+- **KD6 (SQLite-First Workspace & DESIGN.md Store with Postgres Extensibility)**: 로컬 단독 사용자를 위해 SQLite(`.protokflow/protokflow.db`)를 기본 DB로 임베딩하고 SQLModel/SQLAlchemy로 추상화하여 워크스페이스, `DESIGN.md` 마크다운 본문, 정규화된 토큰, 프로토타입 런/패치 히스토리를 관리하며 웹 관리 UI(`/admin`)를 제공한다. `(session-settled: user-directed — ensures zero-config local runs while opening path to Postgres teams/cloud)` `Governs R16, R17, R18`
 
 ### Actors
 - **A1 (AI Coding Agent)**: Claude Desktop, Cursor, Codex 등 MCP 프로토콜을 통해 `create_prototype_run`, `patch_tokens`, `export_prototype` 도구를 직접 호출하는 주체.
@@ -48,10 +49,13 @@ Protokflow는 Meta Astryx 기반의 3계층 디자인 토큰(Foundations → Com
 
 ### Requirements
 
-#### Core Token Resolution & Jinja2 Engine (`protokflow.core`)
+#### Core Token Resolution, DESIGN.md & Database Store (`protokflow.core` & `protokflow.storage`)
 - R1. Astryx 3계층 디자인 토큰 체계(`Foundations → Components → Patterns`)를 지원하고 토큰 캐스케이드 참조(`{colors.indigo-600}`, `{radii.md}`)를 결정론적으로 해석해야 한다.
 - R2. 표준 UI 레이아웃 프리셋(`split-card`, `centered-modal`, `dashboard-shell`, `form-view` 등)을 내장하고 Jinja2 기반으로 1ms 이내 무오류(Zero-syntax-error) HTML을 렌더링해야 한다.
 - R3. 모든 코어 엔진 로직은 네트워크나 I/O 전송 계층 의존성 없이 순수 Python 함수 및 Pydantic 모델로 동작해야 한다.
+- R16. `DESIGN.md` 파일(YAML Front Matter + Markdown)을 파싱하고 정규화된 토큰 트리로 변환하거나 역으로 내보내는 양방향 직렬화기를 구현해야 한다.
+- R17. SQLite를 기본으로 사용하는 SQLModel/SQLAlchemy 기반 저장소를 구축하여 워크스페이스, 토큰, 프로토타입 런/후보군/패치 이력을 영속화하고 추후 Postgres로 연결 확장이 가능해야 한다.
+- R18. `/admin` 웹 라우트를 통해 브라우저에서 워크스페이스 목록 조회, 신규 생성, `DESIGN.md` 마크다운 및 토큰을 시각적으로 편집할 수 있는 관리 UI를 제공해야 한다.
 
 #### MCP Protocol Adapter (`protokflow.adapters.mcp`)
 - R4. Python 공식 `mcp` SDK 기반 stdio 및 SSE 전송 모드를 지원하며, `uvx protokflow mcp` 단일 명령으로 무설치 즉시 실행되어야 한다.
@@ -129,6 +133,9 @@ Protokflow는 Meta Astryx 기반의 3계층 디자인 토큰(Foundations → Com
 
 #### In-Scope
 - 순수 Python 기반 전송 독립형 3계층 토큰 해석 엔진 (`protokflow.core`).
+- Google Labs `DESIGN.md` 파서/익스포터 및 YAML Front Matter ↔ 정규화 토큰 변환기.
+- SQLite 기본 임베디드 워크스페이스/토큰/런 히스토리 DB 저장소 (`SQLModel` 기반, Postgres 확장 가능).
+- 브라우저 기반 워크스페이스 & `DESIGN.md` 웹 어드민 UI (`/admin`).
 - 공식 Python SDK 기반 표준 MCP stdio/SSE 도구 어댑터 5종 (`protokflow.adapters.mcp`).
 - Starlette/Uvicorn 기반 경량 ASGI 프리뷰 서버 및 동적 포트/수명주기 연동 (`protokflow.adapters.http`).
 - WebSocket 기반 CSS Custom Property 마이크로 패치 (<16ms) 및 다중 뷰포트 매트릭스 UI.

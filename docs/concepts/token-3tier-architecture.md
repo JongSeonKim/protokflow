@@ -1,139 +1,128 @@
-# Protokflow 디자인 토큰 3계층 아키텍처 가이드 (Astryx 기반)
+# Protokflow 디자인 토큰 아키텍처 및 DESIGN.md 워크스페이스 가이드
 
-Meta의 디자인 시스템 **Astryx**의 설계를 벤치마킹하여, `Protokflow`에서 채택한 **Foundations → Components → Patterns** 3계층 토큰 체계와 렌더링/코드 추출 가이드입니다.
+Protokflow는 Google Labs의 **DESIGN.md 표준 포맷**(YAML Front Matter + Markdown)과 Meta Astryx의 **3계층 토큰 분리 철학**을 결합하여, AI 에이전트와 인간 개발자가 단일 문서와 DB 워크스페이스를 통해 상호작용할 수 있는 디자인 시스템 엔진을 제공합니다.
 
 ---
 
-## 1. 계층별 구조 및 역할 (3-Tier Architecture)
+## 1. 계층별 구조 및 역할 (3-Tier Architecture & DESIGN.md)
+
+Protokflow는 디자인 명세(Spec)와 런타임 레이아웃(Runtime Layout)을 명확히 분리합니다.
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 1: Foundations (기초 원시 토큰)                       │
-│  - 팔레트 색상, 서체, 곡률(Radius), 간격(Spacing), 그림자 등   │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ 참조
-┌──────────────────────────────▼──────────────────────────────┐
-│  Layer 2: Components (컴포넌트 시맨틱 토큰)                  │
-│  - 버튼, 인풋, 뱃지, 카드 등 개별 UI 부품의 시각 속성        │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ 조합 및 배치
-┌──────────────────────────────▼──────────────────────────────┐
-│  Layer 3: Patterns (패턴 및 화면 레이아웃 토큰)              │
-│  - split-card, data-table, modal 등 완성형 화면 구조 및 카피  │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  [ DESIGN.md / DB Workspace ]                                           │
+│  Layer 1: Foundations (기초 원시 토큰) - colors, typography, rounded...   │
+│  Layer 2: Components (컴포넌트 시맨틱 토큰) - buttons, inputs, cards...   │
+│  Markdown Body: 철학, 브랜드 가이드라인, Do's & Don'ts, 타이포 규칙      │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │ 토큰 참조 & 바인딩
+┌────────────────────────────────────▼────────────────────────────────────┐
+│  [ Protokflow Runtime Templates ]                                       │
+│  Layer 3: Patterns (화면 레이아웃 프리셋 및 컴포넌트 조합)              │
+│  - split-card, centered-modal, dashboard-shell, data-table              │
+│  - 레이아웃 모드, 패널 비율, 슬롯 콘텐츠 주입                           │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. 실제 데이터 구조 예시 (경성오락관 로그인 화면)
+## 2. DESIGN.md 표준 데이터 구조
 
-### Layer 1: Foundations (기초 원시 토큰)
-디자인 시스템의 가장 밑바탕이 되는 글로벌 속성들입니다.
+`DESIGN.md`는 상단의 **YAML Front Matter**(기계 판독용 토큰 정의)와 하단의 **Markdown Body**(에이전트 및 인간을 위한 맥락/가이드라인)로 구성됩니다.
 
-```json
-{
-  "foundations": {
-    "colors": {
-      "indigo-900": "#1E1B4B",
-      "indigo-600": "#4F46E5",
-      "indigo-500": "#6366F1",
-      "slate-800": "#1E293B",
-      "slate-500": "#64748B",
-      "slate-200": "#E2E8F0",
-      "rose-600": "#E11D48",
-      "white": "#FFFFFF"
-    },
-    "radii": {
-      "sm": "6px",
-      "md": "8px",
-      "lg": "16px",
-      "xl": "20px"
-    },
-    "typography": {
-      "font-sans": "Pretendard, -apple-system, sans-serif"
-    }
-  }
-}
+```markdown
+---
+colors:
+  primary: "#4F46E5"
+  primary-hover: "#6366F1"
+  background: "#FFFFFF"
+  surface: "#F8FAFC"
+  text: "#1E293B"
+  text-muted: "#64748B"
+  border: "#E2E8F0"
+  danger: "#E11D48"
+
+typography:
+  font-family: "Pretendard, -apple-system, sans-serif"
+  base-size: "16px"
+  line-height: "1.5"
+
+rounded:
+  sm: "6px"
+  md: "8px"
+  lg: "16px"
+  xl: "20px"
+
+spacing:
+  unit: "4px"
+  sm: "8px"
+  md: "16px"
+  lg: "24px"
+
+components:
+  button-primary:
+    backgroundColor: "{colors.primary}"
+    textColor: "#FFFFFF"
+    rounded: "{rounded.md}"
+    padding: "12px 20px"
+  button-primary-hover:
+    backgroundColor: "{colors.primary-hover}"
+  input-text:
+    borderColor: "{colors.border}"
+    rounded: "{rounded.md}"
+    textColor: "{colors.text}"
+    focusBorderColor: "{colors.primary}"
+    errorBorderColor: "{colors.danger}"
+  badge-brand:
+    backgroundColor: "rgba(79, 70, 229, 0.1)"
+    textColor: "{colors.primary}"
+    rounded: "{rounded.sm}"
+---
+
+# 엔터프라이즈 SaaS 콘솔 디자인 시스템 가이드
+
+## 브랜드 철학
+고효율의 비즈니스 생산성을 지원하는 직관적이고 군더더기 없는 데이터 밀도 중심의 인터페이스를 지향합니다.
+
+## 타이포그래피 및 가독성 규칙
+- 데이터 테이블 및 폼 레이블은 가독성을 위해 14~16px 기준 고대비(WCAG AA 기준 4.5:1 이상)를 유지합니다.
+- 시각적 위계를 위해 헤딩과 본문, 캡션 간의 명확한 서체 크기 및 굵기 대비를 유지합니다.
+
+## Do's and Don'ts
+- **Do**: 모든 핵심 CTA 버튼은 명확한 레이블과 44px 이상의 인터랙션 영역을 유지합니다.
+- **Don't**: 상태 표시 색상(Primary, Danger, Warning 등)을 브랜드 장식용 배경으로 남용하지 않습니다.
 ```
 
 ---
 
-### Layer 2: Components (컴포넌트 시맨틱 토큰)
-기초 토큰을 참조하여 버튼, 입력창, 뱃지 등의 역할을 정의합니다.
+## 3. SQLite/Postgres 기반 다중 워크스페이스 및 DB 관리
 
-```json
-{
-  "components": {
-    "primary-button": {
-      "background": "{colors.indigo-600}",
-      "text": "{colors.white}",
-      "radius": "{radii.md}",
-      "padding": "14px",
-      "hover-background": "{colors.indigo-500}"
-    },
-    "text-input": {
-      "border": "{colors.slate-200}",
-      "radius": "{radii.md}",
-      "text": "{colors.slate-800}",
-      "focus-border": "{colors.indigo-600}",
-      "error-border": "{colors.rose-600}"
-    },
-    "brand-badge": {
-      "background": "rgba(255, 255, 255, 0.15)",
-      "text": "{colors.white}",
-      "radius": "{radii.sm}"
-    }
-  }
-}
-```
+Protokflow는 로컬 단독 개발 환경을 위한 임베디드 **SQLite**(`.protokflow/protokflow.db`)를 기본 저장소로 사용하며, **SQLAlchemy/SQLModel** 추상화를 통해 향후 **Postgres** 엔터프라이즈 환경으로 확장이 가능합니다.
+
+### 데이터베이스 모델 관계
+- **`workspaces`**: 프로젝트 내 여러 테마/컨텍스트(예: `default`, `admin-dark`, `mobile`)를 격리 관리.
+  - `id`, `name`, `description`, `raw_markdown`(가이드 본문), `created_at`, `updated_at`
+- **`design_tokens`**: `DESIGN.md`에서 추출되거나 웹 UI/에이전트로부터 입력된 정규화된 토큰 트리.
+  - `workspace_id`, `tier`(foundation/component), `token_path`, `value`
+- **`prototype_runs` & `candidates` & `token_patches`**: 에이전트가 실행한 프로토타입 생성 기록 및 실시간 패치 히스토리.
+
+### 관리 및 동기화 흐름
+1. **Web UI 관리**: 웹 브라우저(`http://localhost:4100/admin`)에서 워크스페이스별 `DESIGN.md` 마크다운과 토큰을 시각적으로 편집 및 생성.
+2. **에이전트 컨텍스트 제공**: 에이전트가 `design://workspaces/{id}` 리소스를 요청하면 DB에 저장된 마크다운 가이드와 토큰을 즉시 반환하여 프롬프트 컨텍스트에 주입.
+3. **파일 내보내기/가져오기 (Sync)**: 필요 시 DB의 워크스페이스 상태를 프로젝트 루트의 `DESIGN.md` 파일로 덤프하거나 파일로부터 DB로 인덱싱.
 
 ---
 
-### Layer 3: Patterns (패턴/화면 조합 토큰: `split-card`)
-최상위 완성형 레이아웃 템플릿에 레이어 1, 2의 컴포넌트들을 배치하고 카피/상태를 주입합니다.
+## 4. Layer 3(Patterns)와의 결합 및 프로토타이핑 워크플로우
 
+### 1단계: 프로토타입 생성 요청 (`create_prototype_run`)
+에이전트는 대상 `workspace`와 템플릿 `layout_preset`을 지정하여 호출합니다.
 ```json
 {
-  "pattern": {
-    "type": "split-card",
-    "layout": {
-      "mode": "modal",             // modal (중앙 플로팅) 또는 fullscreen (전체 화면)
-      "ratio": "50:50",
-      "max-width": "960px",
-      "container-radius": "{radii.xl}"
-    },
-    "left-brand-panel": {
-      "background": "linear-gradient(135deg, {colors.indigo-900} 0%, {colors.indigo-600} 100%)",
-      "badge-text": "GSPLAY CONSOLE",
-      "title": "경성오락관 관리자 로그인",
-      "subtitle": "시니어 라이프스타일 및 엔터테인먼트 서비스를 위한 통합 관리자 플랫폼",
-      "copyright": "© 2026 GSPlay. All rights reserved."
-    },
-    "right-form-panel": {
-      "title": "로그인",
-      "subtitle": "관리자 계정 정보를 입력해 주세요.",
-      "fields": [
-        { "id": "username", "label": "관리자 아이디", "placeholder": "admin_operator" },
-        { "id": "password", "label": "비밀번호", "placeholder": "••••••••", "has-toggle": true }
-      ],
-      "auxiliary-link": { "text": "비밀번호 찾기" },
-      "submit-button": { "component": "primary-button", "text": "로그인" }
-    }
-  }
-}
-```
-
----
-
-## 3. 에이전트와 MCP 서버의 상호작용 흐름
-
-### 1단계: 초기 후보군 생성 (`create_prototype_run`)
-에이전트는 복잡한 마크업 대신 최상위 패턴 및 변량 축 토큰만 전달합니다.
-```json
-{
-  "screen_goal": "경성오락관 관리자 2열 분할 로그인 화면",
+  "workspace": "admin-dark",
+  "screen_goal": "엔터프라이즈 콘솔 2열 분할 로그인 화면",
   "layout_preset": "split-card",
-  "variation_axes": ["layout.mode"],
+  "variation_axes": ["pattern.layout.mode"],
   "candidates": [
     {
       "id": "c1",
@@ -149,81 +138,21 @@ Meta의 디자인 시스템 **Astryx**의 설계를 벤치마킹하여, `Protokf
 }
 ```
 
-### 2단계: Jinja2 템플릿의 자동 토큰 해석 (Cascade & Resolve)
-- `Protokflow` 내부 엔진이 `{colors.indigo-600}`, `{radii.md}` 등의 토큰 참조를 자동 해소합니다.
-- HTML 인라인 따옴표 충돌이나 문법 오류 없이 100% 검증된 정적 HTML/CSS를 1ms 이내로 렌더링하고 브라우저 프리뷰 서버를 기동합니다.
+### 2단계: 런타임 토큰 캐스케이드 해석 및 초고속 렌더링 (<1ms)
+- 선택된 워크스페이스의 Foundations/Components 토큰과 Layer 3 Pattern 파라미터를 결합하여 Jinja2 템플릿을 정적 HTML/CSS로 컴파일합니다.
 
-### 3단계: 부분 커스터마이징 (`patch_tokens`)
-사용자가 "브랜드 색상을 딥 네이비로 바꾸고 로그인 버튼만 라운드를 더 줘"라고 요청하면:
+### 3단계: WebSocket 초저지연 토큰 핫패치 (`patch_tokens`)
 ```json
 {
   "run_id": "run-login-01",
   "candidate_id": "c1",
   "token_patches": {
-    "foundations.colors.indigo-900": "#0F172A",
-    "components.primary-button.radius": "12px"
+    "colors.primary": "#1E1B4B",
+    "components.button-primary.rounded": "12px"
   }
 }
 ```
-- WebSocket을 통해 브라우저 프리뷰 화면이 새로고침 없이 즉각 핫리로드(Hot-Reload)됩니다.
+- WebSocket을 통해 브라우저 프리뷰 화면의 CSS 변수가 <16ms 이내로 즉각 모핑되며 변경 내역은 DB에 기록됩니다.
 
 ### 4단계: 프로덕션 코드 내보내기 (`export_prototype`)
-확정된 후보 화면을 Astryx의 `swizzle` 방식처럼 실제 프로젝트의 단독 React/Tailwind 컴포넌트로 내보냅니다.
-
-```tsx
-// export_prototype 출력 예시: src/features/auth/views/LoginView.tsx
-export function LoginView() {
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 font-sans">
-      <div className="w-full max-w-[960px] min-h-[560px] flex rounded-[20px] shadow-2xl overflow-hidden bg-white">
-        {/* Left Brand Panel */}
-        <div className="w-1/2 bg-gradient-to-br from-[#1E1B4B] to-[#4F46E5] text-white p-12 flex flex-col justify-between">
-          <div>
-            <span className="inline-block px-3 py-1 bg-white/15 rounded-[6px] text-xs font-semibold tracking-wide mb-6">
-              GSPLAY CONSOLE
-            </span>
-            <h1 className="text-3xl font-bold leading-tight mb-4">
-              경성오락관<br />관리자 로그인
-            </h1>
-            <p className="text-indigo-100 text-sm leading-relaxed">
-              시니어 라이프스타일 및 엔터테인먼트 서비스를 위한 통합 관리자 플랫폼
-            </p>
-          </div>
-          <p className="text-xs text-indigo-300">© 2026 GSPlay. All rights reserved.</p>
-        </div>
-
-        {/* Right Form Panel */}
-        <div className="w-1/2 p-12 flex flex-col justify-center bg-white">
-          <h2 className="text-2xl font-bold text-slate-800 mb-2">로그인</h2>
-          <p className="text-sm text-slate-500 mb-7">관리자 계정 정보를 입력해 주세요.</p>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">관리자 아이디</label>
-              <input className="w-full px-3.5 py-3 rounded-md border border-slate-200 text-sm focus:border-indigo-600 focus:outline-none" placeholder="admin_operator" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">비밀번호</label>
-              <input type="password" className="w-full px-3.5 py-3 rounded-md border border-slate-200 text-sm focus:border-indigo-600 focus:outline-none" placeholder="••••••••" />
-            </div>
-            <div className="flex justify-end">
-              <button type="button" className="text-xs text-indigo-600 font-medium hover:underline">비밀번호 찾기</button>
-            </div>
-            <button type="button" className="w-full py-3.5 bg-indigo-600 text-white rounded-md text-sm font-semibold hover:bg-indigo-500 transition-colors">
-              로그인
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-```
-
----
-
-## 4. 핵심 기대 효과
-1. **에이전트 조작 안정성**: AI가 복잡한 HTML 문자열을 조립하지 않고 JSON 토큰만 다루므로 파싱/문법 에러 원천 차단.
-2. **높은 커스터마이징 유연성**: 기초 값(`Foundations`), 위젯 속성(`Components`), 화면 배치(`Patterns`)의 어느 계층이든 자유롭게 부분 수정 가능.
-3. **프로덕션 직결성**: 프로토타입 단계에서 합의된 시각 규격이 손실 없이 React/Tailwind 코드로 1:1 변환.
-
+- 확정된 화면의 스펙을 검증된 템플릿 기반 스위즐(swizzle) 방식으로 100% 무오류 React/Tailwind 코드로 추출합니다.

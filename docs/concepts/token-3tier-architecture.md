@@ -1,6 +1,6 @@
-# Protokflow 디자인 토큰 아키텍처 및 DESIGN.md 워크스페이스 가이드
+# Protokflow 디자인 토큰 아키텍처 및 DESIGN.md 저장소 가이드
 
-Protokflow는 Google Labs의 **DESIGN.md 표준 포맷**(YAML Front Matter + Markdown)과 Meta Astryx의 **3계층 토큰 분리 철학**을 결합하여, AI 에이전트와 인간 개발자가 단일 문서와 DB 워크스페이스를 통해 상호작용할 수 있는 디자인 시스템 엔진을 제공합니다.
+Protokflow는 Google Labs의 **DESIGN.md 표준 포맷**(YAML Front Matter + Markdown)과 Meta Astryx의 **3계층 토큰 분리 철학**을 결합하여, AI 에이전트와 인간 개발자가 단일 문서와 DB 디자인 시스템을 통해 상호작용할 수 있는 디자인 시스템 엔진을 제공합니다.
 
 ---
 
@@ -10,7 +10,7 @@ Protokflow는 디자인 명세(Spec)와 런타임 레이아웃(Runtime Layout)�
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  [ DESIGN.md / DB Workspace ]                                           │
+│  [ DESIGN.md / DB Store ]                                           │
 │  Layer 1: Foundations (기초 원시 토큰) - colors, typography, rounded...   │
 │  Layer 2: Components (컴포넌트 시맨틱 토큰) - buttons, inputs, cards...   │
 │  Markdown Body: 철학, 브랜드 가이드라인, Do's & Don'ts, 타이포 규칙      │
@@ -95,31 +95,42 @@ components:
 
 ---
 
-## 3. SQLite/Postgres 기반 다중 워크스페이스 및 DB 관리
+## 3. 다중 디자인 시스템과 DESIGN.md 동기화
 
 Protokflow는 로컬 단독 개발 환경을 위한 임베디드 **SQLite**(`.protokflow/protokflow.db`)를 기본 저장소로 사용하며, **SQLAlchemy/SQLModel** 추상화를 통해 향후 **Postgres** 엔터프라이즈 환경으로 확장이 가능합니다.
 
-### 데이터베이스 모델 관계
-- **`workspaces`**: 프로젝트 내 여러 테마/컨텍스트(예: `default`, `admin-dark`, `mobile`)를 격리 관리.
-  - `id`, `name`, `description`, `raw_markdown`(가이드 본문), `created_at`, `updated_at`
-- **`design_tokens`**: `DESIGN.md`에서 추출되거나 웹 UI/에이전트로부터 입력된 정규화된 토큰 트리.
-  - `workspace_id`, `tier`(foundation/component), `token_path`, `value`
-- **`prototype_runs` & `candidates` & `token_patches`**: 에이전트가 실행한 프로토타입 생성 기록 및 실시간 패치 히스토리.
+디자인 시스템은 프로젝트 내 여러 테마/컨텍스트(예: `default`, `admin-dark`, `mobile`)를 격리 관리하는 단위이며, 하나의 디자인 시스템은 하나의 `DESIGN.md`(Markdown 가이드 본문 + Layer 1/2 토큰 트리)에 1:1로 대응합니다. Layer 3(Patterns)는 디자인 시스템에 저장되지 않고 프로토타입 런 실행 시점에 결정되는 런타임 파라미터입니다.
+
+각 디자인 시스템은 **자기완결 문서**입니다. DESIGN.md 스펙에는 계층·상속·오버라이드 개념이 없고, 토큰 참조는 같은 파일 안에서 해석되어야 합니다(`broken-ref` 린트). 따라서 하위 디렉토리의 `DESIGN.md`도 부분 오버라이드가 아니라 형제 디자인 시스템으로 취급합니다.
+
+```
+repo/
+├─ DESIGN.md          → 'default'
+└─ design/
+   ├─ admin-dark.md   → 'admin-dark'
+   └─ mobile.md       → 'mobile'
+```
+
+> 테이블 정의, 컬럼, 제약 조건 등 구체적인 데이터베이스 스키마는 이 문서의 범위가 아닙니다. [데이터베이스 스키마 설계](./database-schema.md)를 참조하세요.
+
+### 저장소 위상
+
+`DESIGN.md`는 **DB에 저장되고 DB에서 편집**됩니다. 레포의 `DESIGN.md` 파일은 그 투영본이며, git을 통한 팀 동기화 채널이자 표준 상호운용 포맷 역할을 합니다. DB(`.protokflow/protokflow.db`)는 gitignore 대상이므로 언제든 파일로부터 재구축할 수 있습니다.
 
 ### 관리 및 동기화 흐름
-1. **Web UI 관리**: 웹 브라우저(`http://localhost:4100/admin`)에서 워크스페이스별 `DESIGN.md` 마크다운과 토큰을 시각적으로 편집 및 생성.
-2. **에이전트 컨텍스트 제공**: 에이전트가 `design://workspaces/{id}` 리소스를 요청하면 DB에 저장된 마크다운 가이드와 토큰을 즉시 반환하여 프롬프트 컨텍스트에 주입.
-3. **파일 내보내기/가져오기 (Sync)**: 필요 시 DB의 워크스페이스 상태를 프로젝트 루트의 `DESIGN.md` 파일로 덤프하거나 파일로부터 DB로 인덱싱.
+1. **Web UI 관리**: 웹 브라우저(`/admin`)에서 디자인 시스템별 `DESIGN.md` 마크다운과 토큰을 시각적으로 편집 및 생성. 저장은 DB에 반영되는 동시에 `DESIGN.md` 파일로 **즉시 write-through** 되어 git이 변경을 보게 됩니다.
+2. **에이전트 컨텍스트 제공**: 에이전트가 `design://systems/{id}` 리소스를 요청하면 DB에 저장된 마크다운 가이드와 토큰을 즉시 반환하여 프롬프트 컨텍스트에 주입.
+3. **파일 → DB 상시 선검사**: `git pull`, 브랜치 전환, 에이전트의 파일 직접 편집 등 외부 변경이 발생할 수 있으므로, 매 도구 호출 시 `(mtime, size)`를 검사하고 불일치할 때만 해시를 비교해 재인덱싱합니다.
 
 ---
 
 ## 4. Layer 3(Patterns)와의 결합 및 프로토타이핑 워크플로우
 
 ### 1단계: 프로토타입 생성 요청 (`create_prototype_run`)
-에이전트는 대상 `workspace`와 템플릿 `layout_preset`을 지정하여 호출합니다.
+에이전트는 대상 `design_system`과 템플릿 `layout_preset`을 지정하여 호출합니다.
 ```json
 {
-  "workspace": "admin-dark",
+  "design_system": "admin-dark",
   "screen_goal": "엔터프라이즈 콘솔 2열 분할 로그인 화면",
   "layout_preset": "split-card",
   "variation_axes": ["pattern.layout.mode"],
@@ -139,7 +150,7 @@ Protokflow는 로컬 단독 개발 환경을 위한 임베디드 **SQLite**(`.pr
 ```
 
 ### 2단계: 런타임 토큰 캐스케이드 해석 및 초고속 렌더링 (<1ms)
-- 선택된 워크스페이스의 Foundations/Components 토큰과 Layer 3 Pattern 파라미터를 결합하여 Jinja2 템플릿을 정적 HTML/CSS로 컴파일합니다.
+- 선택된 디자인 시스템의 Foundations/Components 토큰과 Layer 3 Pattern 파라미터를 결합하여 Jinja2 템플릿을 정적 HTML/CSS로 컴파일합니다.
 
 ### 3단계: WebSocket 초저지연 토큰 핫패치 (`patch_tokens`)
 ```json

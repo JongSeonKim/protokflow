@@ -75,3 +75,6 @@ upload/
 
 # Antigravity CLI
 .antigravitycli/
+
+# legacy design harness
+design_harness*/

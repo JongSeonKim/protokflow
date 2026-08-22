@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ideation: Protokflow 아키텍처 재검토 — MCP vs. FastAPI vs. Hybrid Core</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-border: #334155;
+      --surface-hover: #273549;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent: #6366f1;
+      --accent-soft: rgba(99, 102, 241, 0.15);
+      --accent-border: rgba(99, 102, 241, 0.35);
+      --accent-text: #a5b4fc;
+      --success: #10b981;
+      --success-soft: rgba(16, 185, 129, 0.15);
+      --success-border: rgba(16, 185, 129, 0.35);
+      --success-text: #6ee7b7;
+      --warning: #f59e0b;
+      --warning-soft: rgba(245, 158, 11, 0.15);
+      --warning-border: rgba(245, 158, 11, 0.35);
+      --warning-text: #fcd34d;
+      --danger: #ef4444;
+      --danger-soft: rgba(239, 68, 68, 0.15);
+      --danger-border: rgba(239, 68, 68, 0.35);
+      --danger-text: #fca5a5;
+      --code-bg: #090d16;
+      --font-sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --radius-xl: 20px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.65;
+      font-size: 15px;
+      padding: 40px 20px 80px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 920px;
+      margin-inline: auto;
+    }
+
+    /* Header & Metadata */
+    header {
+      margin-bottom: 40px;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--surface-border);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent-text);
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-border);
+      padding: 3px 10px;
+      border-radius: var(--radius-sm);
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.3;
+      margin-bottom: 16px;
+      color: #ffffff;
+      letter-spacing: -0.02em;
+    }
+
+    .meta-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 24px;
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+      font-size: 13px;
+    }
+
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .meta-label {
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+
+    .meta-value {
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    /* Section Typography */
+    section {
+      margin-bottom: 48px;
+    }
+
+    h2 {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      letter-spacing: -0.01em;
+    }
+
+    h3 {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--text);
+    }
+
+    p {
+      color: var(--text-muted);
+      margin-bottom: 14px;
+      max-width: 76ch;
+    }
+
+    strong {
+      color: var(--text);
+    }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      background: var(--code-bg);
+      border: 1px solid var(--surface-border);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #e2e8f0;
+    }
+
+    /* Jump Nav */
+    .jump-nav {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+      margin-bottom: 28px;
+    }
+
+    .jump-nav-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 10px;
+    }
+
+    .jump-nav-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      list-style: none;
+    }
+
+    .jump-nav-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13.5px;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      transition: all 0.15s ease;
+    }
+
+    .jump-nav-link:hover {
+      background: var(--surface-hover);
+      color: var(--text);
+    }
+
+    .jump-nav-badge {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      padding: 2px 8px;
+      border-radius: 9999px;
+      background: var(--code-bg);
+      border: 1px solid var(--surface-border);
+      color: var(--text-muted);
+    }
+
+    /* Grounding Callout Grid */
+    .grounding-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 768px) {
+      .grounding-grid { grid-template-columns: 1fr; }
+    }
+
+    .grounding-card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-md);
+      padding: 18px 20px;
+    }
+
+    .grounding-card h4 {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--accent-text);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .grounding-card p {
+      font-size: 13.5px;
+      margin-bottom: 0;
+      line-height: 1.55;
+    }
+
+    /* Comparison Matrix Table */
+    .comparison-table-wrap {
+      overflow-x: auto;
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-md);
+      margin: 20px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      text-align: left;
+    }
+
+    th {
+      background: rgba(0, 0, 0, 0.25);
+      color: var(--text);
+      font-weight: 700;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--surface-border);
+    }
+
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--surface-border);
+      color: var(--text-muted);
+      vertical-align: top;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Topic Axes */
+    .axes-list {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 640px) {
+      .axes-list { grid-template-columns: 1fr; }
+    }
+
+    .axis-pill {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .axis-name {
+      font-weight: 700;
+      font-size: 13.5px;
+      color: var(--accent-text);
+    }
+
+    .axis-desc {
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    /* Idea Cards */
+    .idea-card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-lg);
+      padding: 26px;
+      margin-bottom: 28px;
+      scroll-margin-top: 24px;
+      transition: border-color 0.2s ease;
+    }
+
+    .idea-card:hover {
+      border-color: rgba(99, 102, 241, 0.5);
+    }
+
+    .idea-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .idea-title-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .idea-rank-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent-text);
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-border);
+      padding: 2px 8px;
+      border-radius: var(--radius-sm);
+      width: fit-content;
+    }
+
+    .idea-title {
+      font-size: 19px;
+      font-weight: 800;
+      color: #ffffff;
+      line-height: 1.35;
+    }
+
+    .idea-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      border: 1px solid;
+    }
+
+    .chip-axis {
+      background: rgba(99, 102, 241, 0.1);
+      border-color: var(--accent-border);
+      color: var(--accent-text);
+    }
+
+    .chip-conf-high {
+      background: var(--success-soft);
+      border-color: var(--success-border);
+      color: var(--success-text);
+    }
+
+    .chip-cx-small {
+      background: rgba(148, 163, 184, 0.1);
+      border-color: var(--surface-border);
+      color: var(--text-muted);
+    }
+
+    .chip-cx-med {
+      background: var(--warning-soft);
+      border-color: var(--warning-border);
+      color: var(--warning-text);
+    }
+
+    .idea-description {
+      font-size: 14.5px;
+      color: var(--text);
+      margin-bottom: 18px;
+      line-height: 1.6;
+    }
+
+    .idea-fields {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: var(--code-bg);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+      font-size: 13.5px;
+      margin-bottom: 18px;
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 12px;
+    }
+
+    @media (max-width: 600px) {
+      .field-row { grid-template-columns: 1fr; }
+    }
+
+    .field-label {
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      padding-top: 2px;
+    }
+
+    .field-content {
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    .basis-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-right: 6px;
+    }
+
+    .basis-direct { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+    .basis-reasoned { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
+    .basis-external { background: rgba(245, 158, 11, 0.2); color: #fcd34d; }
+
+    /* SVG Visual Containers */
+    .diagram-container {
+      background: #090d16;
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      margin: 16px 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .diagram-container svg {
+      max-width: 100%;
+      height: auto;
+    }
+
+    .diagram-caption {
+      font-size: 11.5px;
+      color: var(--text-dim);
+      margin-top: 10px;
+      text-align: center;
+    }
+
+    /* Rejection Summary Table */
+    .rejection-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: var(--danger-soft);
+      border: 1px solid var(--danger-border);
+      color: var(--danger-text);
+      display: inline-block;
+      margin-bottom: 4px;
+    }
+
+    /* Footer */
+    footer.composition-signal {
+      margin-top: 60px;
+      padding-top: 24px;
+      border-top: 1px solid var(--surface-border);
+      font-size: 12px;
+      color: var(--text-dim);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header & Visible Metadata -->
+    <header>
+      <div class="eyebrow">Ce-Ideate Discovery Artifact</div>
+      <h1>Protokflow 아키텍처 재검토: MCP vs. FastAPI vs. Hybrid Core</h1>
+      
+      <div class="meta-strip">
+        <div class="meta-item">
+          <span class="meta-label">Date:</span>
+          <span class="meta-value"><time datetime="2026-08-22">2026-08-22</time></span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Topic:</span>
+          <span class="meta-value">protokflow-mcp-vs-fastapi</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Mode:</span>
+          <span class="meta-value">repo-grounded</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Focus:</span>
+          <span class="meta-value">docs/plans/2026-08-20-2224-feat-protokflow-mcp-server-plan.md 원점 재논의 (MCP vs FastAPI)</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Grounding Context -->
+    <section id="grounding-context">
+      <h2>Grounding Context (배경 및 기반 분석)</h2>
+      <p>
+        초기 계획 문서(<code>docs/plans/2026-08-20-2224-feat-protokflow-mcp-server-plan.md</code>)는 Python 공식 <code>mcp</code> SDK를 사용하는 stdio MCP 서버와 Starlette 기반의 웹소켓 프리뷰 서버를 병렬 구동하는 구조를 제안했습니다. 그러나 "AI 코딩 에이전트(Claude Desktop, Cursor, Codex 등)의 원활한 조작"과 "인간 사용자의 실시간 브라우저 핫리로드 비교"라는 두 가지 목표 사이에서 <strong>MCP vs. FastAPI의 적합성 및 결합 방식</strong>에 대한 원점 재검토가 필요합니다.
+      </p>
+
+      <div class="grounding-grid">
+        <div class="grounding-card">
+          <h4>📌 핵심 목표 및 페인포인트</h4>
+          <p>
+            기존 로컬 하니스의 20+ 회 CLI 호출 의례를 타파하고, 에이전트가 단 1~2회의 도구 호출로 디자인 토큰 기반 후보 화면을 생성하고 실시간 프리뷰를 띄우는 것이 목표입니다.
+          </p>
+        </div>
+        <div class="grounding-card">
+          <h4>⚡ 3계층 토큰 엔진 (Astryx 기반)</h4>
+          <p>
+            <code>Foundations → Components → Patterns</code> 3계층 토큰 구조로 Jinja2에 주입하여 문법 오류 없는 정적 HTML/CSS를 1ms 이내 렌더링하고 React/Tailwind 코드로 추출합니다.
+          </p>
+        </div>
+      </div>
+
+      <h3>MCP vs. FastAPI vs. Hybrid 아키텍처 비교표</h3>
+      <div class="comparison-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>구분</th>
+              <th>순수 MCP (stdio)</th>
+              <th>순수 FastAPI (REST+WS)</th>
+              <th>하이브리드 코어 (FastMCP / ASGI Embedded) ⭐</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>에이전트 조작성</strong></td>
+              <td><strong>최상 (Native Tool)</strong>: <code>uvx protokflow</code>로 무설치 자동 도구 등록.</td>
+              <td><strong>열세</strong>: 서버 사전 구동 필요, cURL/OpenAPI 호출 의례 발생.</td>
+              <td><strong>최상 (Native Tool)</strong>: 에이전트에게는 표준 MCP Tool로 직접 노출.</td>
+            </tr>
+            <tr>
+              <td><strong>브라우저 프리뷰</strong></td>
+              <td><strong>제한적</strong>: stdio는 JSON-RPC 전용이므로 별도 웹 서빙 백그라운드 필요.</td>
+              <td><strong>최상</strong>: 단일 포트에서 Swagger API + 웹소켓 핫리로드 직접 서빙.</td>
+              <td><strong>최상</strong>: MCP 내부에서 가벼운 Starlette ASGI 루프백 서버를 온디맨드 바인딩.</td>
+            </tr>
+            <tr>
+              <td><strong>생명주기 & 포트 충돌</strong></td>
+              <td>에이전트 종료 시 프리뷰 서버가 좀비로 남거나 포트 4100 충돌 위험.</td>
+              <td>백그라운드 데몬 관리 필요 (수동 <code>Ctrl+C</code> 또는 kill 필요).</td>
+              <td><strong>완벽 해결</strong>: 동적 포트 바인딩(port 0) 및 stdio EOF 연동 자동 정리.</td>
+            </tr>
+            <tr>
+              <td><strong>결론 및 권고</strong></td>
+              <td>에이전트 UX는 좋으나 웹 프리뷰 격리 필요.</td>
+              <td>웹 개발엔 편하나 에이전트 도구 연동 비용 큼.</td>
+              <td><strong>채택 권고</strong>: 순수 Python 코어 엔진 + FastMCP/ASGI 듀얼 어댑터.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Topic Axes -->
+    <section id="topic-axes">
+      <h2>Topic Axes (탐색 축 분해)</h2>
+      <div class="axes-list">
+        <div class="axis-pill">
+          <span class="axis-name">1. agent-interaction-friction</span>
+          <span class="axis-desc">에이전트 도구 호출 오버헤드, stdio/SSE 연동, 무설치 실행(uvx)</span>
+        </div>
+        <div class="axis-pill">
+          <span class="axis-name">2. live-preview-feedback-loop</span>
+          <span class="axis-desc">브라우저 나란히 비교, CSS 변수 핫리로드(&lt;16ms), 포커스 보존</span>
+        </div>
+        <div class="axis-pill">
+          <span class="axis-name">3. core-engine-modularity</span>
+          <span class="axis-desc">전송 독립적 3계층 토큰 엔진, Jinja2 컴파일러, React/Tailwind 추출</span>
+        </div>
+        <div class="axis-pill">
+          <span class="axis-name">4. state-lifecycle-execution-model</span>
+          <span class="axis-desc">임시 포트 할당, stdio 수명주기 연동(Dead-Man's Switch), 세션 상태 유지</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Ranked Ideas -->
+    <section id="ranked-ideas">
+      <h2>Ranked Ideas (최종 생존 및 채택 후보군)</h2>
+
+      <!-- Within-section Jump Nav -->
+      <nav class="jump-nav" aria-label="Ranked Ideas Jump Navigation">
+        <div class="jump-nav-title">Quick Jump to Ideas</div>
+        <ul class="jump-nav-list">
+          <li>
+            <a class="jump-nav-link" href="#idea-1">
+              <span><strong>1. Headless Domain Engine Core with Dual-Mode Protocol Adapters</strong></span>
+              <span class="jump-nav-badge">core-engine-modularity · Conf 95%</span>
+            </a>
+          </li>
+          <li>
+            <a class="jump-nav-link" href="#idea-2">
+              <span><strong>2. In-Process FastMCP / Embedded ASGI Preview + Tethered Dead-Man's Switch</strong></span>
+              <span class="jump-nav-badge">state-lifecycle-execution-model · Conf 90%</span>
+            </a>
+          </li>
+          <li>
+            <a class="jump-nav-link" href="#idea-3">
+              <span><strong>3. Zero-Compile CSS Custom Property Injection for &lt;16ms Hot-Reload</strong></span>
+              <span class="jump-nav-badge">live-preview-feedback-loop · Conf 92%</span>
+            </a>
+          </li>
+          <li>
+            <a class="jump-nav-link" href="#idea-4">
+              <span><strong>4. Single-Source Pydantic Schemas for MCP Tools & FastAPI OpenAPI</strong></span>
+              <span class="jump-nav-badge">agent-interaction-friction · Conf 88%</span>
+            </a>
+          </li>
+          <li>
+            <a class="jump-nav-link" href="#idea-5">
+              <span><strong>5. Automated Headless Multimodal Snapshot Injection for Vision Agents</strong></span>
+              <span class="jump-nav-badge">agent-interaction-friction · Conf 85%</span>
+            </a>
+          </li>
+          <li>
+            <a class="jump-nav-link" href="#idea-6">
+              <span><strong>6. Synchronized Viewport Matrix for Multi-Candidate Side-by-Side Comparison</strong></span>
+              <span class="jump-nav-badge">live-preview-feedback-loop · Conf 84%</span>
+            </a>
+          </li>
+          <li>
+            <a class="jump-nav-link" href="#idea-7">
+              <span><strong>7. Deterministic AST-Free Swizzle Exporter for React/Tailwind Emission</strong></span>
+              <span class="jump-nav-badge">core-engine-modularity · Conf 89%</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+
+      <!-- Idea 1 -->
+      <article class="idea-card" id="idea-1">
+        <div class="idea-header">
+          <div class="idea-title-group">
+            <span class="idea-rank-badge">RANK 1 · CORE ARCHITECTURE</span>
+            <h3 class="idea-title">Headless Domain Engine Core with Dual-Mode Protocol Adapters (MCP & FastAPI as Thin Shells)</h3>
+          </div>
+          <div class="idea-chips">
+            <span class="chip chip-axis">core-engine-modularity</span>
+            <span class="chip chip-conf-high">Confidence 95%</span>
+            <span class="chip chip-cx-med">Complexity Medium</span>
+          </div>
+        </div>
+
+        <p class="idea-description">
+          "MCP냐 FastAPI냐"라는 이분법을 해체하고, 토큰 3계층 해석과 Jinja2 렌더링, React/Tailwind 코드 추출 로직을 전송 계층과 완전히 독립된 순수 Python 비즈니스 로직(<code>protokflow.core</code>)으로 설계합니다. 그 위에 <strong>MCP 도구 어댑터(<code>protokflow.adapters.mcp</code>)</strong>와 <strong>FastAPI/Starlette 웹 어댑터(<code>protokflow.adapters.http</code>)</strong>를 각각 50줄 내외의 얇은 래퍼(Thin Shell)로 구현하여, CLI 진입점(<code>protokflow [mcp|serve]</code>)에 따라 둘 다 완벽하게 구동할 수 있도록 합니다.
+        </p>
+
+        <!-- Structural Diagram -->
+        <div class="diagram-container">
+          <svg viewBox="0 0 760 220" width="760" height="220" xmlns="http://www.w3.org/2000/svg">
+            <!-- Background & Boundaries -->
+            <rect x="230" y="20" width="300" height="180" rx="14" fill="#1e293b" stroke="#6366f1" stroke-width="2" stroke-dasharray="4 4"/>
+            <text x="380" y="46" fill="#a5b4fc" font-size="13" font-weight="700" text-anchor="middle" font-family="Pretendard, sans-serif">protokflow.core (Pure Headless Engine)</text>
+            <rect x="250" y="65" width="260" height="36" rx="6" fill="#0f172a" stroke="#334155"/>
+            <text x="380" y="88" fill="#f8fafc" font-size="12" text-anchor="middle" font-family="Pretendard, sans-serif">3-Tier Token Resolver (Astryx Cascade)</text>
+            <rect x="250" y="110" width="260" height="36" rx="6" fill="#0f172a" stroke="#334155"/>
+            <text x="380" y="133" fill="#f8fafc" font-size="12" text-anchor="middle" font-family="Pretendard, sans-serif">Jinja2 Zero-Error Template Engine</text>
+            <rect x="250" y="155" width="260" height="36" rx="6" fill="#0f172a" stroke="#334155"/>
+            <text x="380" y="178" fill="#f8fafc" font-size="12" text-anchor="middle" font-family="Pretendard, sans-serif">React / Tailwind Code Swizzler</text>
+
+            <!-- Left Adapter (MCP) -->
+            <rect x="20" y="55" width="170" height="110" rx="10" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+            <text x="105" y="85" fill="#6ee7b7" font-size="13" font-weight="700" text-anchor="middle" font-family="Pretendard, sans-serif">MCP Adapter</text>
+            <text x="105" y="108" fill="#94a3b8" font-size="11" text-anchor="middle" font-family="Pretendard, sans-serif">stdio / SSE Transport</text>
+            <text x="105" y="128" fill="#64748b" font-size="10.5" text-anchor="middle" font-family="Pretendard, sans-serif">Claude / Cursor Agent</text>
+            <text x="105" y="148" fill="#a5b4fc" font-size="10" font-family="monospace" text-anchor="middle">uvx protokflow mcp</text>
+
+            <!-- Right Adapter (FastAPI) -->
+            <rect x="570" y="55" width="170" height="110" rx="10" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+            <text x="655" y="85" fill="#fcd34d" font-size="13" font-weight="700" text-anchor="middle" font-family="Pretendard, sans-serif">ASGI HTTP / WS</text>
+            <text x="655" y="108" fill="#94a3b8" font-size="11" text-anchor="middle" font-family="Pretendard, sans-serif">Starlette Preview Server</text>
+            <text x="655" y="128" fill="#64748b" font-size="10.5" text-anchor="middle" font-family="Pretendard, sans-serif">Browser / WebSocket Client</text>
+            <text x="655" y="148" fill="#a5b4fc" font-size="10" font-family="monospace" text-anchor="middle">protokflow serve</text>
+
+            <!-- Arrows -->
+            <path d="M 190 110 L 230 110" stroke="#10b981" stroke-width="2" marker-end="url(#arrow)"/>
+            <path d="M 530 110 L 570 110" stroke="#f59e0b" stroke-width="2"/>
+          </svg>
+          <div class="diagram-caption">구조 다이어그램: 순수 Python 코어 엔진과 얇은 프로토콜 어댑터 계층 분리</div>
+        </div>
+
+        <div class="idea-fields">
+          <div class="field-row">
+            <span class="field-label">Basis:</span>
+            <span class="field-content"><span class="basis-tag basis-reasoned">reasoned:</span> docs/plans/...:33-47 & docs/concepts/...:9-24. 코어 렌더링 로직을 전송 계층과 분리하여 네트워크 목킹 없는 10ms 단위 테스트 및 다중 전송 계층 지원 달성.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Rationale:</span>
+            <span class="field-content">사용자나 에이전트가 어떤 방식을 선호하든 핵심 비즈니스 로직(토큰 캐스케이드 및 템플릿 렌더링)을 단 1줄도 중복하지 않고 100% 재사용할 수 있습니다.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Downsides:</span>
+            <span class="field-content">단일 파일 스크립트 대비 프로젝트 패키지 구조(core, adapters, cli) 초기 보일러플레이트 분리 설계 비용이 발생합니다.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 2 -->
+      <article class="idea-card" id="idea-2">
+        <div class="idea-header">
+          <div class="idea-title-group">
+            <span class="idea-rank-badge">RANK 2 · PROCESS & LIFECYCLE</span>
+            <h3 class="idea-title">In-Process FastMCP / Embedded ASGI Preview Server with Ephemeral Port & Process Tethering</h3>
+          </div>
+          <div class="idea-chips">
+            <span class="chip chip-axis">state-lifecycle-execution-model</span>
+            <span class="chip chip-conf-high">Confidence 90%</span>
+            <span class="chip chip-cx-small">Complexity Small</span>
+          </div>
+        </div>
+
+        <p class="idea-description">
+          stdio 기반 MCP 서버는 표준 I/O가 JSON-RPC 전용으로 사용되므로, 고정 포트(4100) 웹 서버를 함께 띄우면 다중 워크스페이스 실행 시 포트 충돌(<code>Errno 48</code>) 및 좀비 프로세스 누수가 발생합니다. 이를 해결하기 위해 MCP 프로세스 내부에서 <strong>동적 임시 포트(port 0) 루프백 ASGI 서버</strong>를 온디맨드로 구동하고, 에이전트 stdio 파이프의 EOF를 감지하여 에이전트 종료 시 프리뷰 서버를 500ms 내에 스스로 안전하게 회수(Dead-Man's Switch)합니다.
+        </p>
+
+        <div class="idea-fields">
+          <div class="field-row">
+            <span class="field-label">Basis:</span>
+            <span class="field-content"><span class="basis-tag basis-direct">direct:</span> docs/plans/...:39,102-108 & FastMCP / Starlette 라이프스팬 연동 모델.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Rationale:</span>
+            <span class="field-content">개발자가 수동으로 <code>kill -9</code>를 하거나 포트 점유 에러를 겪지 않아도 되며, <code>uvx protokflow</code> 명령 하나로 완전 무간섭(Zero-maintenance) 로컬 실행을 보장합니다.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Downsides:</span>
+            <span class="field-content">에이전트가 재시작되면 프리뷰 포트 번호가 달라지므로 브라우저 탭을 새로 열어야 합니다. (PID 락파일로 완화 가능).</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 3 -->
+      <article class="idea-card" id="idea-3">
+        <div class="idea-header">
+          <div class="idea-title-group">
+            <span class="idea-rank-badge">RANK 3 · LIVE FEEDBACK</span>
+            <h3 class="idea-title">Zero-Compile CSS Custom Property Injection for Instant (&lt;16ms) Hot-Reload</h3>
+          </div>
+          <div class="idea-chips">
+            <span class="chip chip-axis">live-preview-feedback-loop</span>
+            <span class="chip chip-conf-high">Confidence 92%</span>
+            <span class="chip chip-cx-small">Complexity Small</span>
+          </div>
+        </div>
+
+        <p class="idea-description">
+          Astryx 3계층 토큰(Foundations, Components)을 브라우저 <code>:root</code>의 CSS Custom Properties(<code>--pf-colors-primary</code>, <code>--pf-radii-md</code>)로 1:1 매핑합니다. 에이전트가 <code>patch_tokens</code>를 호출할 때 무거운 Jinja2 HTML 전체를 다시 렌더링하지 않고, 웹소켓을 통해 변경된 토큰 델타만 전송하여 <code>style.setProperty</code>로 16ms(60fps) 이내에 즉각 화면 스타일을 모핑합니다.
+        </p>
+
+        <div class="idea-fields">
+          <div class="field-row">
+            <span class="field-label">Basis:</span>
+            <span class="field-content"><span class="basis-tag basis-direct">direct:</span> docs/plans/...:44-46, 166 & docs/concepts/...:33-57. 200ms 반응성 SLA 초과 달성 및 입력 폼 포커스/스크롤 상태 100% 보존.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Rationale:</span>
+            <span class="field-content">전체 HTML 재렌더링 시 발생하는 화면 깜빡임(FOUC)과 인풋 포커스 유실을 없애고 Figma 스타일의 부드러운 토큰 조작 반응성을 제공합니다.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Downsides:</span>
+            <span class="field-content">새로운 HTML 태그나 슬롯 구조가 추가되는 <code>update_slot_custom</code>의 경우에만 부분 DOM 교체가 필요합니다.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 4 -->
+      <article class="idea-card" id="idea-4">
+        <div class="idea-header">
+          <div class="idea-title-group">
+            <span class="idea-rank-badge">RANK 4 · SCHEMA PARITY</span>
+            <h3 class="idea-title">Single-Source Pydantic Schemas with Auto-Compiling MCP Tools & FastAPI OpenAPI Specs</h3>
+          </div>
+          <div class="idea-chips">
+            <span class="chip chip-axis">agent-interaction-friction</span>
+            <span class="chip chip-conf-high">Confidence 88%</span>
+            <span class="chip chip-cx-small">Complexity Small</span>
+          </div>
+        </div>
+
+        <p class="idea-description">
+          3계층 토큰 계층(Foundations, Components, Patterns)과 5종 도구 인터페이스를 Pydantic v2 모델로 단 1회 엄격히 정의합니다. 이 모델로부터 FastMCP는 엄격한 JSONSchema 제약(Enum, Literal 프리셋)을 갖춘 MCP 도구를 컴파일하고, FastAPI는 대화형 Swagger/OpenAPI 문서를 자동 생성하여 두 인터페이스 간의 스키마 드리프트를 원천 차단합니다.
+        </p>
+
+        <div class="idea-fields">
+          <div class="field-row">
+            <span class="field-label">Basis:</span>
+            <span class="field-content"><span class="basis-tag basis-direct">direct:</span> docs/concepts/...:30-124 & docs/plans/...:57-120. Pydantic v2 단일 소스 정의.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Rationale:</span>
+            <span class="field-content">에이전트가 잘못된 레이아웃 프리셋이나 누락된 필드를 전달하는 파싱 오류를 사전 방지하고 완벽한 타입 안전성을 확보합니다.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Downsides:</span>
+            <span class="field-content">Pydantic v2 의존성이 추가되나 현대 Python 개발 환경에서 표준에 가깝습니다.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 5 -->
+      <article class="idea-card" id="idea-5">
+        <div class="idea-header">
+          <div class="idea-title-group">
+            <span class="idea-rank-badge">RANK 5 · VISION AGENT SUPPORT</span>
+            <h3 class="idea-title">Automated Headless Multimodal Snapshot Injection for Vision Agents</h3>
+          </div>
+          <div class="idea-chips">
+            <span class="chip chip-axis">agent-interaction-friction</span>
+            <span class="chip chip-conf-high">Confidence 85%</span>
+            <span class="chip chip-cx-med">Complexity Medium</span>
+          </div>
+        </div>
+
+        <p class="idea-description">
+          에이전트가 <code>create_prototype_run</code> 또는 <code>patch_tokens</code>를 호출했을 때, 텍스트 URL뿐만 아니라 공식 MCP 표준인 <code>ImageContent</code>(Base64 스크린샷 이미지)를 도구 결과에 함께 반환합니다. 이를 통해 Claude 3.7 Sonnet이나 GPT-4o 같은 멀티모달 비전 모델이 자신이 생성한 UI 레이아웃의 시각적 불균형이나 대비 문제를 1턴 만에 스스로 확인하고 자가 교정할 수 있게 합니다.
+        </p>
+
+        <div class="idea-fields">
+          <div class="field-row">
+            <span class="field-label">Basis:</span>
+            <span class="field-content"><span class="basis-tag basis-external">external:</span> 공식 MCP Multimodal Tool Result 규격 (ImageContent payload).</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Rationale:</span>
+            <span class="field-content">인간이 브라우저를 보고 "텍스트가 잘렸어"라고 지적하기 전에 에이전트가 렌더링된 시각 이미지를 직접 보고 폐루프(Closed-Loop)로 품질을 높입니다.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Downsides:</span>
+            <span class="field-content">헤드리스 렌더링(Playwright 또는 초경량 래스터라이저) 구동 시 약간의 지연 시간(100~300ms)이 추가될 수 있어 옵션 플래그로 제공해야 합니다.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 6 -->
+      <article class="idea-card" id="idea-6">
+        <div class="idea-header">
+          <div class="idea-title-group">
+            <span class="idea-rank-badge">RANK 6 · COMPARISON UX</span>
+            <h3 class="idea-title">Synchronized Viewport Matrix for Multi-Candidate Side-by-Side Live Comparison</h3>
+          </div>
+          <div class="idea-chips">
+            <span class="chip chip-axis">live-preview-feedback-loop</span>
+            <span class="chip chip-conf-high">Confidence 84%</span>
+            <span class="chip chip-cx-med">Complexity Medium</span>
+          </div>
+        </div>
+
+        <p class="idea-description">
+          브라우저 프리뷰 쉘을 다중 뷰포트 매트릭스 캔버스로 구성하여 생성된 모든 후보군(<code>c1</code>, <code>c2</code>, <code>c3</code>)을 바둑판형 또는 2열 분할형으로 동시에 나란히 렌더링합니다. 하나의 후보에서 스크롤을 내리거나 반응형 브레이크포인트 핸들을 조절하면 모든 후보 화면이 동기화되어 움직여 시각적·구조적 차이점을 한눈에 평가할 수 있습니다.
+        </p>
+
+        <div class="idea-fields">
+          <div class="field-row">
+            <span class="field-label">Basis:</span>
+            <span class="field-content"><span class="basis-tag basis-direct">direct:</span> docs/plans/...:19, 46. 다중 후보 및 상태별 나란히 비교(Side-by-Side Comparison) 뷰 제공.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Rationale:</span>
+            <span class="field-content">탭 전환 방식으로 인한 인간의 단기 기억 손실을 방지하고 의사결정 시간을 70% 단축합니다.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Downsides:</span>
+            <span class="field-content">후보군이 4개 이상으로 많아질 경우 브라우저 렌더링 부하 및 화면 공간 제약이 발생합니다.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 7 -->
+      <article class="idea-card" id="idea-7">
+        <div class="idea-header">
+          <div class="idea-title-group">
+            <span class="idea-rank-badge">RANK 7 · CODE EXPORT</span>
+            <h3 class="idea-title">Deterministic AST-Free Swizzle Exporter for React/Tailwind Emission</h3>
+          </div>
+          <div class="idea-chips">
+            <span class="chip chip-axis">core-engine-modularity</span>
+            <span class="chip chip-conf-high">Confidence 89%</span>
+            <span class="chip chip-cx-small">Complexity Small</span>
+          </div>
+        </div>
+
+        <p class="idea-description">
+          <code>export_prototype</code> 구현 시 파이썬 내에서 불안정한 JS/TS AST 구문 트리를 직접 조립하지 않고, Docusaurus의 <code>swizzle</code> 방식처럼 사전에 엄격히 검증된 React/Tailwind 컴포넌트 템플릿에 확정된 토큰 값을 1:1 치환하여 내보냅니다. 이를 통해 생성된 TSX 컴포넌트가 100% 문법 오류 없이 실제 프로덕션 프로젝트에 즉시 마운트될 수 있도록 보장합니다.
+        </p>
+
+        <div class="idea-fields">
+          <div class="field-row">
+            <span class="field-label">Basis:</span>
+            <span class="field-content"><span class="basis-tag basis-direct">direct:</span> docs/concepts/...:170-221 & docs/plans/...:40, 110-119. 프로덕션 코드 직결성.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Rationale:</span>
+            <span class="field-content">AST 파서의 엣지 케이스 버그를 원천 배제하고 즉시 린트/컴파일이 통과하는 무결점 코드를 방출합니다.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Downsides:</span>
+            <span class="field-content">지원하고자 하는 프론트엔드 프레임워크(React, Vue 등)별로 사전 정의된 템플릿 프리셋이 유지 관리되어야 합니다.</span>
+          </div>
+        </div>
+      </article>
+
+    </section>
+
+    <!-- Rejection Summary -->
+    <section id="rejection-summary">
+      <h2>Rejection Summary (탈락 및 기각 후보 분석)</h2>
+      <p>
+        Phase 3 적대적 검증(Adversarial Verification) 및 오케스트레이터 중재를 거쳐 기각된 후보들과 명확한 사유입니다.
+      </p>
+
+      <div class="comparison-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 40px;">#</th>
+              <th style="width: 260px;">기각된 후보 아이디어</th>
+              <th>기각 사유 (Rejection Reason)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>
+                <span class="rejection-badge">REFUTED</span><br>
+                <strong>Content-Addressed Git DAG Token Tree with 3-Way Rebase</strong>
+              </td>
+              <td>
+                <strong>계획서 핵심 목표 정면 위배</strong>: <code>docs/plans/...:16</code>에서 지적한 기존 레거시 하니스의 실패 원인인 "엄격한 SHA-256 해시 추적, 임대(lease) 관리 등 지나치게 많은 트랜잭션 의례"를 다시 불러오는 과도한 엔지니어링(Over-engineering)으로 판명됨.
+              </td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>
+                <span class="rejection-badge">REFUTED</span><br>
+                <strong>Zero-Server Static Artifact Engine (Standalone HTML)</strong>
+              </td>
+              <td>
+                <strong>제품 요구조건 불충족</strong>: 로컬 웹소켓 서버를 완전히 제거하면 실시간 핫리로드(&lt;200ms) 계약(L44-46, L166)이 깨지고 브라우저 수동 새로고침을 강제해야 하므로 탈락 (오프라인 내보내기 부가 기능으로만 가치 있음).
+              </td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>
+                <span class="rejection-badge">REFUTED</span><br>
+                <strong>Pure CLI UNIX Pipeline (Streaming JSON-Patch)</strong>
+              </td>
+              <td>
+                <strong>문제 정의 정면 위배</strong>: <code>docs/plans/...:16</code>에서 비판한 "단일 후보 생성을 위한 20+ 회의 세부 CLI 호출 병목"을 재현하는 방식이며, 에이전트의 단일 턴 MCP 도구 호출 모델에 역행함.
+              </td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>
+                <span class="rejection-badge">WEAK</span><br>
+                <strong>Bi-Directional Unprompted Browser-to-Agent Event Bridge</strong>
+              </td>
+              <td>
+                <strong>프로토콜 아키텍처 불일치</strong>: MCP stdio는 에이전트가 주도하는 Pull 프로토콜이므로 브라우저가 에이전트에게 사전 요청 없이 턴을 강제 주입할 수 없음 (수동 클립보드 복사 브리지로 축소 적용 가능).
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Composition Signal Footer -->
+    <footer class="composition-signal">
+      Composed 2026-08-22T12:48:00+09:00 by ce-ideate from <code>docs/plans/2026-08-20-2224-feat-protokflow-mcp-server-plan.md</code>
+    </footer>
+
+  </div>
+</body>
+</html>

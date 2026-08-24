@@ -44,7 +44,7 @@ Protokflow는 Google Labs의 `DESIGN.md` 표준 포맷(YAML Front Matter + Markd
 - **KD4 (Single-Source Pydantic v2 Schemas for MCP Tools & OpenAPI Specs)**: 토큰 계층 및 6종 도구 인터페이스를 Pydantic v2 모델로 정의하여 MCP JSONSchema와 FastAPI Swagger 문서를 단일 소스에서 자동 동기화하고 스키마 드리프트를 방지한다. `Governs R5, R12`
 - **KD5 (Deterministic AST-Free Template Swizzle Exporter)**: `export_prototype`은 사전 검증된 컴포넌트 템플릿에 토큰을 1:1 치환하는 스위즐(swizzle) 방식으로 100% 문법 무결한 React/Tailwind 코드를 방출한다. `Governs R14, R15`
 - **KD6 (Repository-Scoped SQLite Store with Postgres Extensibility)**: 레포지토리 단위 격리 원칙에 따라 프로젝트마다 `.protokflow/protokflow.db` SQLite 데이터베이스를 두고 SQLAlchemy 2.0으로 디자인 시스템, `DESIGN.md` 마크다운 본문, 정규화된 토큰, 프로토타입 런/패치 이력을 영속화한다. 불필요한 다중 테넌시 복잡도를 배제하고, 향후 Postgres 확장 경로는 표준 SQL 호환성 및 타입 규율을 통해 보장한다. `Governs R17, R19, R20`
-- **KD7 (DB-First Store with `DESIGN.md` File Projection)**: `DESIGN.md`의 내용은 DB를 정본으로 관리·편집되며, 파일 시스템의 파일은 Git 동기화를 위한 투영본으로 유지된다. `/admin` 저장은 파일로 즉시 write-through되고, 외부 변경(`git pull`, 브랜치 전환, 파일 직접 수정 등)은 **매 도구 호출 시 `(mtime, size)` 선검사**로 감지하여 자동 재인덱싱한다. Git 추적 대상인 `DESIGN.md`를 통해 데이터 손실 없는 복구 가능성을 보장한다. `Governs R16, R18, R20, R21`
+- **KD7 (DB-First Store with In-Place `DESIGN.md` File Projection)**: `DESIGN.md`는 DB를 정본으로 관리하며, 로컬 파일 시스템은 Git 동기화 및 상호운용을 위한 투영본(projection)으로 유지한다. write-through 저장 시 `design_systems.front_matter_raw` 원문을 기반으로 **대상 토큰만 in-place 치환**하여 주석, 공백, 서식을 온전히 보존하고 diff 노이즈를 방지한다. 외부 변경(`git pull`, 브랜치 전환 등)은 **매 도구 호출 시 `(mtime, size)` 선검사**로 감지하여 자동 재인덱싱한다. Git 추적 대상인 `DESIGN.md`를 통해 데이터 손실 없는 복구 가능성을 보장한다. `Governs R16, R18, R20, R21`
 - **KD8 (Self-Contained Sibling Design Systems with Derived Experiments)**: `DESIGN.md` 표준 규약에 따라 디자인 시스템은 계층적 상속 없이 **형제 관계의 자기완결 문서**로 모델링한다. 실험용 파생 디자인 시스템은 출처(`derived_from_id`) 메타데이터만 유지하고 완전히 해석된 토큰 트리를 독립 보유하며, 기본적으로 DB 내에서 탐색되다가 필요 시 명시적으로 파일로 export된다. `Governs R5, R22, R23`
 
 ### Actors
@@ -57,7 +57,7 @@ Protokflow는 Google Labs의 `DESIGN.md` 표준 포맷(YAML Front Matter + Markd
 - R1. Astryx 3계층 디자인 토큰 체계(`Foundations → Components → Patterns`)를 지원하고 토큰 캐스케이드 참조(`{colors.indigo-600}`, `{radii.md}`)를 결정론적으로 해석해야 한다.
 - R2. 표준 UI 레이아웃 프리셋(`split-card`, `centered-modal`, `dashboard-shell`, `form-view` 등)을 내장하고 Jinja2 기반으로 1ms 이내 무오류(Zero-syntax-error) HTML을 렌더링해야 한다.
 - R3. 모든 코어 엔진 로직은 네트워크나 I/O 전송 계층 의존성 없이 순수 Python 함수 및 Pydantic 모델로 동작해야 한다.
-- R16. `DESIGN.md` 파일(YAML Front Matter + Markdown)을 파싱하고 정규화된 토큰 트리로 변환하거나 역으로 내보내는 양방향 직렬화기를 구현해야 한다. 왕복은 **무손실**이어야 한다 — 스펙이 정의한 `omitted`와 허용된 커스텀 확장 키(`unknown-key` 린트가 침묵하는 키)를 원문 그대로 보존해야 하며, 방출된 파일은 공식 린터(`npx @google/design.md lint`)를 통과해야 한다.
+- R16. `DESIGN.md` 파일(YAML Front Matter + Markdown)을 파싱하고 정규화된 토큰 트리로 변환하거나 역으로 내보내는 양방향 직렬화기를 구현해야 한다. 왕복은 **바이트 수준으로 무손실**이어야 한다 — 스펙이 정의한 `omitted`, 린터가 침묵하는 커스텀 확장 키(미지의 최상위 키 및 토큰 이름)에 더해 **주석·빈 줄·따옴표 스타일·키 순서**까지 보존해야 하며, 방출된 파일은 공식 린터(`npx @google/design.md lint`)를 새 경고 없이 통과해야 한다. Front Matter에 YAML 앵커(`&name`)/별칭(`*name`)이 존재하면 참조 무결성 훼손 방지를 위해 인덱싱 시점에 명시적 오류로 검출 및 거부해야 한다.
 - R17. 레포당 하나의 SQLite DB를 사용하는 SQLAlchemy 기반 저장소를 구축하여 8개 테이블(`schema_meta`, `design_systems`, `design_tokens`, `prototype_runs`, `candidates`, `token_patches`, `slot_contents`, `exports`)로 상태를 영속화해야 한다. 상세 사양은 [데이터베이스 스키마 설계](../concepts/database-schema.md)를 단일 소스로 한다.
 - R18. `/admin` 웹 라우트를 통해 브라우저에서 디자인 시스템 목록 조회, 신규 생성, `DESIGN.md` 마크다운 및 토큰을 시각적으로 편집할 수 있는 관리 UI를 제공해야 한다. 저장은 DB 반영과 동시에 대응 파일로 write-through되어야 하며, 파생 디자인 시스템의 원본 대비 diff를 표시해야 한다.
 - R19. 런 데이터의 보존 정책을 제공해야 한다. 기본값으로 디자인 시스템당 최근 50개 런을 유지하고 초과분은 `archived` 처리 후 `protokflow prune`으로 삭제하며, 디자인 시스템과 토큰은 자동 삭제 대상이 아니다.
@@ -164,12 +164,18 @@ Protokflow는 Google Labs의 `DESIGN.md` 표준 포맷(YAML Front Matter + Markd
 - **Covers**: R5, R16, R18, R22.
 
 #### AE6: Lossless Round-Trip and Linter Conformance
-- **Given**: 사용자의 `DESIGN.md`에 `omitted: [spacing]`과 커스텀 확장 키가 포함되어 있음.
+- **Given**: 사용자의 `DESIGN.md`에 `omitted: [spacing]`, 커스텀 확장 키, 그리고 사람이 작성한 YAML 주석(관리 메모 및 토큰 옆 인라인 주석)이 포함되어 있음.
 - **When**: 파일을 인덱싱한 뒤 `/admin`에서 색상 토큰 하나를 수정하여 write-through가 발생.
-- **Then**: 재작성된 파일에 `omitted` 선언과 커스텀 키가 그대로 남아 있고, 섹션 순서가 스펙의 정규 순서를 유지하며, `npx @google/design.md lint`가 새로운 경고 없이 통과함.
+- **Then**: `git diff`가 해당 토큰 1줄만 보여주고, `omitted` 선언·커스텀 키·주석·따옴표 스타일·키 순서가 모두 그대로 남아 있으며, `npx @google/design.md lint`가 새로운 경고 없이 통과함.
 - **Covers**: R16, R18.
 
-#### AE7: Reconciliation After `git pull`
+#### AE7: YAML Anchor Rejection at Index Time
+- **Given**: `DESIGN.md`의 Front Matter가 `primary: &ink "#0B0E14"`와 `overlay: *ink`처럼 YAML 앵커와 별칭을 사용함.
+- **When**: 해당 파일을 인덱싱함.
+- **Then**: 인덱싱이 명시적 오류로 거부되고, 앵커를 스펙 참조 문법(`{colors.primary}`)으로 변환하라는 안내가 제시됨. 손상된 상태로 DB에 적재되거나 write-through가 수행되지 않음.
+- **Covers**: R16.
+
+#### AE8: Reconciliation After `git pull`
 - **Given**: MCP 서버가 동작 중이고 동료가 `DESIGN.md`의 `colors.primary`를 변경해 푸시함.
 - **When**: 사용자가 `git pull` 후 별도 조작 없이 `create_prototype_run`을 호출.
 - **Then**: 선검사가 변경을 감지해 재인덱싱이 선행되고 새 런은 갱신된 토큰으로 렌더링되며, 이전에 열려 있던 프리뷰 화면은 스냅샷 덕분에 그대로 유지됨.

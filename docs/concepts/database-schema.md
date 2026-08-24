@@ -1,9 +1,9 @@
 # Protokflow 데이터베이스 스키마 설계
 
-> 상태: 확정 설계 (v0.2) · 대상 릴리스: `protokflow` 0.1.0
+> 대상 릴리스: `protokflow` 0.1.0
 > 관련 문서: [디자인 토큰 아키텍처](./token-3tier-architecture.md) · [Protokflow 서버 플랜](../plans/2026-08-20-protokflow-server-plan.md)
 
-이 문서는 저장소 계층(`backend/app/protokflow/model/`)의 영속 데이터 모델 및 저장 경계, 동기화 정책을 정의한다. 플랜의 요구사항(R16~R23)과 설계 결정(KD6~KD8)을 반영한 단일 소스 명세이다.
+이 문서는 저장소 계층(`backend/app/protokflow/model/`)의 영속 데이터 모델 및 저장 경계, 동기화 정책을 정의한다. 플랜의 요구사항(R16~R23)과 설계 결정(KD6~KD8)을 반영한 단일 소스 명세다.
 
 ---
 
@@ -11,7 +11,7 @@
 
 | 용어 | 정의 | 비고 / 주의 |
 |---|---|---|
-| **레포 / 프로젝트** | SQLite DB 1개의 격리 범위. 테이블로 모델링하지 않는다(§1-1). | 프론트엔드 생태계(pnpm, Turborepo 등)와의 용어 충돌을 방지하기 위해 `workspace` 명칭을 사용하지 않는다. |
+| **레포 / 프로젝트** | SQLite DB 1개의 격리 범위. 테이블로 모델링하지 않는다(§1-1). | 독립된 레포지토리/프로젝트 작업 범위를 의미하며 별도 테이블로 모델링하지 않는다. |
 | **디자인 시스템** (`design_systems`) | `DESIGN.md` 1개에 대응하는 1개 엔티티(`default`, `admin-dark` 등). 독립 완결 문서이며 상속 없이 동등한 형제 관계를 갖는다(§5.2). | 독립된 토큰 네임스페이스와 스타일 가이드를 소유하는 단위. |
 | **파생 디자인 시스템** (derived) | 기존 디자인 시스템으로부터 분기된 실험용 엔티티. `derived_from_id`로 출처를 추적하되 토큰은 완전 해석된 상태로 독립 관리된다. | 상속 모델이 아니며, 자체 토큰 트리를 독립적으로 완결하여 보유한다. |
 | **후보** (`candidates`) | 단일 런(`prototype_runs`) 내에서 나란히 비교하는 개별 화면 변형(`c1`, `c2`). 뷰포트 매트릭스(R11)의 표시 단위. | 디자인 시스템 단위의 실험(파생)과 구분되는 화면 수준의 레이아웃/토큰 변형 단위. |
@@ -39,19 +39,19 @@ DB = f(DESIGN.md) + 소멸 가능한 런 이력
 
 ---
 
-## 2. 명시적 배제 결정
+## 2. 설계 원칙 및 비포함 아키텍처 사양
 
-선행 도구(`design-harness`)의 스키마는 단일 화면 후보 생성에 20회 이상의 CLI 호출을 강제하는 병목을 유발했다. 다음 테이블군은 의도적으로 배제한다.
+에이전트와의 초저지연 상호작용 및 단일 호출 완결성(SC1)을 위해, 불필요한 트랜잭션 오버헤드를 유발하는 구조를 배제하고 다음 원칙에 따라 데이터 모델을 간결하게 유지한다.
 
-| 배제 대상 | 선행 구현 | 배제 근거 |
-|---|---|---|
-| 콘텐츠 주소화 아티팩트 저장소 | `artifact(manifest_hash, content_hash, …)` | 프로토타입 HTML은 결정론적으로 재생성 가능한 파생물이다. 해시 계산은 불필요한 연산 비용이다. |
-| 권위/리비전 그래프 | `authority_revision`, `authority_current` | 디자인 시스템 토큰은 최신 상태 1개만 유효하다. 버전 관리는 Git에 위임한다. |
-| 2단계 승격 프로토콜 | `proposal`, `design_projection_intent`, `approval` | 로컬 단독 사용자에게 제안·승인 분리는 불필요한 의례다. 관리 UI의 저장은 즉시 반영된다. |
-| 임대/펜스 토큰 동시성 제어 | `candidate_slot.fence_token`, `lease_expires_at` | 쓰기 트랜잭션이 단일 도구 호출로 짧고 경합 단위가 디자인 시스템 하나이므로, WAL + `busy_timeout`으로 충분하다(§6 동시성). |
-| 상태 전이 테이블 | `run_lifecycle_transition`, `candidate_attempt_transition` | 상태 머신은 Pydantic v2 Enum(KD4)에 두어 단일 소스를 유지하며 DB에 이중 정의하지 않는다. |
-| 범용 이벤트/저널 | `event`, `operation_journal` | 실제로 조회되는 이력은 토큰 패치 이력뿐이므로 전용 테이블(`token_patches`) 1개만 유지한다. |
-| 시맨틱 ID/툼스톤 | `semantic_id`, `semantic_tombstone` | 화면 요소의 영속 식별자 체계는 현재 제품 범위 밖이다. |
+| 배제 영역 | 설계 Rationale |
+|---|---|
+| **콘텐츠 주소화 아티팩트 저장소** | 프로토타입 HTML은 템플릿과 토큰을 통해 1ms 이내에 결정론적으로 재생성되는 파생물이므로 별도 아티팩트 해시 테이블을 두지 않는다. |
+| **DB 레벨 권위/리비전 그래프** | 디자인 시스템 토큰은 최신 활성 상태 1개만 관리하며, 영속적인 변경 이력 및 버전 관리는 Git에 위임한다. |
+| **2단계 승격 프로토콜** | 불필요한 다단계 제안/승인 절차를 배제하고 관리 UI 및 에이전트 승격 명령을 단일 트랜잭션으로 즉시 반영한다. |
+| **임대/펜스 분산 동시성 제어** | 트랜잭션이 단일 도구 호출 단위로 완결되므로 SQLite WAL 모드와 `busy_timeout`으로 동시성을 충분히 제어한다(§6 동시성). |
+| **상태 전이 이력 테이블** | 수명주기 상태 머신은 Pydantic v2 Enum(KD4) 단일 소스로 관리하며 DB에 중복 모델링하지 않는다. |
+| **범용 이벤트 저널** | 조회 요구가 명확한 토큰 패치 이력 전용 테이블(`token_patches`)만 유지하여 단순성을 확보한다. |
+| **시맨틱 요소 식별자 체계** | 화면 요소의 복잡한 영속 식별자 및 툼스톤 관리는 현재 제품 범위에서 제외한다. |
 
 `design_systems.source_digest`는 무결성 암호화 증명이 아닌 외부 파일 변경(`git pull`, 브랜치 전환 등) 감지를 위한 목적으로 유지된다(§6 상시 선검사).
 
@@ -140,6 +140,7 @@ CREATE TABLE design_systems (
   spec_version    TEXT,                            -- Front Matter `version` (현재 'alpha')
   derived_from_id TEXT      REFERENCES design_systems(id) ON DELETE SET NULL,
   front_matter_extras JSON  NOT NULL DEFAULT '{}', -- 모델링하지 않은 최상위 키 원문 보존
+  front_matter_raw TEXT     NOT NULL DEFAULT '',  -- Front Matter 원문(주석·정렬·따옴표 포함)
   guide_markdown  TEXT      NOT NULL DEFAULT '',  -- DESIGN.md 본문(Front Matter 제외)
   source_path     TEXT,                           -- 대응하는 DESIGN.md 파일 경로
   source_digest   TEXT,                           -- 마지막 동기화 시점 파일의 sha256
@@ -152,12 +153,13 @@ CREATE TABLE design_systems (
 - `slug`는 사용자와 에이전트가 도구 인자로 전달하는 식별자(`design_system: "admin-dark"`)이므로 고유해야 한다. 내부 외래키 참조는 `id`를 사용한다.
 - **Front Matter 키 매핑**: `name` → `title`, `description` → `description`, `version` → `spec_version`. 토큰 그룹(`colors`/`typography`/`rounded`/`spacing`/`components`)은 `design_tokens`로 정규화한다.
 - **`front_matter_extras`는 무손실 라운드트립을 위한 컬럼이다.** DESIGN.md 스펙이 정의한 `omitted`(생략 섹션 선언) 및 커스텀 확장 키를 원문 그대로 보존하여 파일 export 시 공식 린터(`@google/design.md`) 규격을 충족한다.
+- **`front_matter_raw`는 in-place 패치 write-through의 기반이다.** Front Matter 원문을 주석, 빈 줄, 따옴표 스타일, 키 순서까지 바이트 단위로 보존한다. 저장 시 이 원문을 라운드트립 파서로 읽어 대상 토큰 위치만 치환하므로 Git diff 최소화(단일 토큰 변경 시 1줄 diff) 및 사용자 서식 보존을 보장한다. 정규화된 행 기반 직렬화 재생성 방식과 달리 불필요한 diff 노이즈를 차단한다. 파일 미연동 시스템은 생성 시점에 1회 직렬화하여 이 컬럼을 초기화한다.
 - `guide_markdown`은 `design://systems/{slug}` 리소스로 반환되어 에이전트의 프롬프트 컨텍스트가 된다.
 - `source_path`가 NULL인 디자인 시스템은 **DB 전용**(파일 미연동)이다. 파생 디자인 시스템은 기본적으로 DB 전용으로 생성되어 Git 트리를 오염시키지 않으며, 필요 시 명시적 export를 통해 `design/{slug}.md` 파일로 변환된다.
 - `derived_from_id`는 **출처(provenance) 추적용 메타데이터**이다. 파생 시스템도 완전 해석된 자기완결 토큰 트리를 가지며, `promote_tokens`의 원본 병합 대상 식별 및 `/admin` UI의 diff 표시에 사용된다.
 - `source_mtime`/`source_size`는 도구 호출 시 파일 변경 여부를 저비용(`stat`)으로 선검사하여 해시 계산 오버헤드를 회피하는 용도이다(§6).
 
-#### 디자인 시스템은 자기완결 형제 문서다
+#### 디자인 시스템 형제 모델 및 독립 완결성 규약
 
 [DESIGN.md 스펙](https://github.com/google-labs-code/design.md)에는 계층적 상속(`extends`/`inherits`)이나 오버라이드 규약이 존재하지 않으며, 린트 규칙 `broken-ref`는 모든 토큰 참조가 단일 파일 내에서 완결될 것을 요구한다. 따라서 Protokflow는 디자인 시스템을 상속 관계가 아닌 동등한 **형제 관계의 자기완결 문서**로 모델링한다.
 
@@ -327,6 +329,12 @@ CREATE TABLE exports (
 
 진행 중인 프리뷰는 실행 시점의 `prototype_runs.token_snapshot`을 참조하므로 재인덱싱의 영향을 받지 않는다.
 
+### 인덱싱 시 YAML 앵커 거부
+
+인덱싱 시 Front Matter에 YAML 앵커(`&name`) 또는 별칭(`*name`)이 존재하면 **명시적 오류로 거부**하고, `{colors.primary}` 형식의 스펙 참조 문법으로 변환할 것을 안내한다.
+
+DESIGN.md 표준 스펙은 참조 문법으로 `{path.to.token}` 문자열 포맷만을 규정한다. YAML 앵커 및 별칭은 로드 시점에 파서에 의해 사전 역참조(dereference)되므로, 대상 토큰을 in-place 패치할 때 별칭 노드가 정적 값으로 고착화되어 참조 무결성이 단절된다. 이러한 묵시적 참조 손상을 방지하기 위해 파일 인덱싱 시점에 YAML 앵커 검출 시 즉시 처리를 중단하고 오류를 반환한다.
+
 ### 동시성
 
 하나의 MCP 프로세스 내에서 MCP 어댑터와 ASGI 프리뷰 서버가 코어 인스턴스를 공유한다. 또한 동일 레포지토리에 대해 복수의 프로세스(예: 에이전트 세션 + 터미널의 `protokflow serve`)가 접근할 수 있으므로, SQLite는 WAL 모드 및 `busy_timeout`을 기본 적용하여 단일 트랜잭션 경합을 처리한다.
@@ -344,7 +352,7 @@ CREATE TABLE exports (
 | R10 (핫패치) | `token_patches`, `candidates.token_overrides` |
 | R11 (뷰포트 매트릭스) | `candidates.position` |
 | R14/R15 (코드 내보내기) | `exports.format` |
-| R16 (DESIGN.md 양방향 직렬화) | `design_systems` 동기화 컬럼(`title`, `spec_version`, `front_matter_extras`, `guide_markdown`, `source_*`), `design_tokens` |
+| R16 (DESIGN.md 양방향 직렬화) | `design_systems` 동기화 컬럼(`title`, `spec_version`, `front_matter_extras`, `front_matter_raw`, `guide_markdown`, `source_*`), `design_tokens` |
 | R17 (SQLite 영속화) | 전체 스키마 + `schema_meta` |
 | R18 (관리 UI) | `design_systems`, `design_tokens.origin` |
 | R19 (런 보존 정책) | `prototype_runs.status`, `prototype_runs.created_time` |
@@ -391,6 +399,6 @@ Postgres 확장 경로는 열어두되, 현재 단계의 준비 작업은 방언
 |---|---|---|
 | Q1 | 디자인 시스템 토큰의 버전 이력/롤백이 필요한가? | `DESIGN.md`가 Git에 커밋되므로 버전 관리는 Git에 위임하는 것으로 가정. 필요 시 `design_system_versions` 테이블 신설 검토. |
 | Q2 | 사용자(A2)의 후보 평가·코멘트를 영속화하는가? | 현재 요구사항에 없어 미포함. 필요 시 `candidate_feedback` 신설. |
-| Q4 | 스냅샷 이미지의 보존 기간은? | 런 프루닝(§9)과 함께 삭제하는 것으로 가정. |
-| Q5 | 커스텀 프리셋 레지스트리(`.protokflow/presets/`)가 DB 항목이 되는가? | 파일 시스템 기반으로 가정. DB화 시 `layout_presets` 테이블 추가 검토. |
-| Q6 | 동일한 `token_snapshot`을 여러 런이 복제하는 것을 허용하는가? | 허용. 스냅샷은 수 KB 수준이며 프루닝으로 상한 관리. 추후 필요 시 `snapshots` 테이블로 중복 제거 검토. |
+| Q3 | 스냅샷 이미지의 보존 기간은? | 런 프루닝(§9)과 함께 삭제하는 것으로 가정. |
+| Q4 | 커스텀 프리셋 레지스트리(`.protokflow/presets/`)가 DB 항목이 되는가? | 파일 시스템 기반으로 가정. DB화 시 `layout_presets` 테이블 추가 검토. |
+| Q5 | 동일한 `token_snapshot`을 여러 런이 복제하는 것을 허용하는가? | 허용. 스냅샷은 수 KB 수준이며 프루닝으로 상한 관리. 추후 필요 시 `snapshots` 테이블로 중복 제거 검토. |

@@ -194,6 +194,13 @@ def _set_engine_for_testing(engine: AsyncEngine | None) -> None:
     _active_engine = engine
 
 
+def _get_active_factory() -> async_sessionmaker[AsyncSession | Any]:
+    """Return the active session factory or raise the public initialization error."""
+    if _active_factory is None:
+        raise RuntimeError("DB session factory is not initialized")
+    return _active_factory
+
+
 class _SessionFactoryProxy:
     """Lookup-time forwarder for the active session factory.
 
@@ -205,22 +212,13 @@ class _SessionFactoryProxy:
     """
 
     def __call__(self) -> Any:
-        factory = _active_factory
-        if factory is None:
-            raise RuntimeError("DB session factory is not initialized")
-        return factory()
+        return _get_active_factory()()
 
     def begin(self) -> Any:
-        factory = _active_factory
-        if factory is None:
-            raise RuntimeError("DB session factory is not initialized")
-        return factory.begin()
+        return _get_active_factory().begin()
 
     def __getattr__(self, name: str) -> Any:
-        factory = _active_factory
-        if factory is None:
-            raise RuntimeError("DB session factory is not initialized")
-        return getattr(factory, name)
+        return getattr(_get_active_factory(), name)
 
 
 async_db_session = cast(

@@ -43,7 +43,7 @@ async def test_test_db_rows_do_not_leak_between_tests(test_db: object) -> None:
         session.add(DesignSystem(slug="fixture-isolation", title="Fixture isolation"))
 
     async with imported_async_db_session() as session:
-        rows = (await session.scalars(select(DesignSystem))).all()
+        rows = (await session.scalars(select(DesignSystem).limit(2))).all()
 
     assert len(rows) == 1
     assert rows[0].slug == "fixture-isolation"
@@ -53,9 +53,9 @@ async def test_test_db_rows_do_not_leak_between_tests(test_db: object) -> None:
 async def test_test_db_starts_clean_after_previous_test(test_db: object) -> None:
     del test_db
     async with imported_async_db_session() as session:
-        rows = (await session.scalars(select(DesignSystem))).all()
+        row = await session.scalar(select(DesignSystem.id).limit(1))
 
-    assert rows == []
+    assert row is None
 
 
 def test_test_database_path_guard_accepts_worker_and_serial_paths() -> None:

@@ -14,7 +14,7 @@ from backend.database import db
 
 
 TEST_DATABASE_PREFIX = "protokflow_test_"
-_TEST_DATABASE_STEM = re.compile(r"^protokflow_test_[^/]+$")
+_TEST_DATABASE_STEM = re.compile(rf"^{re.escape(TEST_DATABASE_PREFIX)}[^/]+$")
 
 
 def validate_test_database_path(
@@ -38,7 +38,7 @@ def validate_test_database_path(
 
     if resolved.suffix != ".db" or not _TEST_DATABASE_STEM.fullmatch(resolved.stem):
         raise RuntimeError(
-            "test database filename must use the protokflow_test_ prefix: "
+            f"test database filename must use the {TEST_DATABASE_PREFIX} prefix: "
             f"{resolved.name}"
         )
     return resolved
@@ -58,9 +58,7 @@ def cleanup_database_files(path: str | Path) -> None:
     """Best-effort cleanup after the engine has been disposed."""
     for candidate in database_sidecar_paths(path):
         try:
-            candidate.unlink()
-        except FileNotFoundError:
-            pass
+            candidate.unlink(missing_ok=True)
         except OSError:
             # A failed cleanup should not mask the test's original failure.
             pass

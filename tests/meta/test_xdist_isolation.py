@@ -14,6 +14,7 @@ import re
 import shlex
 import tomllib
 from collections.abc import Iterator
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -26,12 +27,12 @@ from backend.database import db
 from backend.database.db import async_db_session as imported_async_db_session
 from tests.conftest import PRODUCTION_DB_PATH
 from tests.support import db as db_fixtures
+from tests.support.db import TEST_DATABASE_PREFIX
 
 pytestmark = pytest.mark.meta
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TESTS_DIR = _REPO_ROOT / "tests"
-_TEST_DATABASE_PREFIX = "protokflow_test_"
 _TESTING_HOOKS = {"_set_engine_for_testing", "_set_factory_for_testing"}
 _ISOLATION_FIXTURE_NAMES = {
     "_test_database_guard",
@@ -81,8 +82,8 @@ def test_controller_and_worker_database_names_are_isolated(
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
     worker = db.create_database_path(unittest=True)
 
-    assert controller == home / f"{_TEST_DATABASE_PREFIX}{run_id}.db"
-    assert worker == home / f"{_TEST_DATABASE_PREFIX}{run_id}_gw0.db"
+    assert controller == home / f"{TEST_DATABASE_PREFIX}{run_id}.db"
+    assert worker == home / f"{TEST_DATABASE_PREFIX}{run_id}_gw0.db"
     assert controller != worker
 
 
@@ -92,7 +93,7 @@ def test_import_time_engine_observes_the_test_database_namespace() -> None:
     actual = Path(str(db.async_engine.url.database)).resolve()
 
     assert actual == expected
-    assert actual.name.startswith(_TEST_DATABASE_PREFIX)
+    assert actual.name.startswith(TEST_DATABASE_PREFIX)
     assert actual.parent == Path(os.environ["PROTOKFLOW_HOME"]).resolve()
 
 
@@ -174,8 +175,7 @@ def _production_database_must_remain_unchanged() -> Iterator[None]:
 def test_no_non_meta_test_module_calls_testing_hooks() -> None:
     """Engine and factory swaps stay inside the shared harness or boundary tests."""
     offenders: list[str] = []
-    for path in _scanned_modules():
-        tree = ast.parse(path.read_text(), filename=str(path))
+    for path, tree in _scanned_modules():
         calls = _direct_testing_hook_calls(tree)
         if calls:
             offenders.append(f"{path}: {calls}")
@@ -186,8 +186,7 @@ def test_no_non_meta_test_module_calls_testing_hooks() -> None:
 def test_no_non_meta_test_module_defines_local_isolation_fixtures() -> None:
     """The shared fixture stack cannot be silently shadowed by a test module."""
     offenders: list[str] = []
-    for path in _scanned_modules():
-        tree = ast.parse(path.read_text(), filename=str(path))
+    for path, tree in _scanned_modules():
         fixtures = _local_isolation_fixtures(tree)
         if fixtures:
             offenders.append(f"{path}: {fixtures}")
@@ -232,13 +231,14 @@ def _table_names(connection: Connection) -> list[str]:
     return inspect(connection).get_table_names()
 
 
-def _scanned_modules() -> list[Path]:
-    """Return all test Python modules except meta and explicit harness modules."""
-    return [
-        path
+@cache
+def _scanned_modules() -> tuple[tuple[Path, ast.AST], ...]:
+    """Parse each eligible test module once for the structural guards."""
+    return tuple(
+        (path, ast.parse(path.read_text(), filename=str(path)))
         for path in _TESTS_DIR.rglob("*.py")
         if not _is_meta_module(path) and not _is_allowed_harness_module(path)
-    ]
+    )
 
 
 def _is_meta_module(path: Path) -> bool:

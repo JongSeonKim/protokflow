@@ -73,11 +73,9 @@ DB = f(DESIGN.md) + 소멸 가능한 런 이력
 
 ## 4. 엔티티 관계
 
-```text
-                    ┌──────────────────┐
-                    │  schema_meta     │  (key/value, 스키마 버전)
-                    └──────────────────┘
+스키마 버전은 별도 테이블이 아니라 SQLite DB 헤더의 `PRAGMA user_version`(정수)에 보관한다(§5.1). 아래 다이어그램은 도메인 테이블 관계만 표시한다.
 
+```text
 ┌───────────────────────────┐        1     N   ┌──────────────────────────┐
 │  design_systems           │──────────────────│  design_tokens           │
 │  DESIGN.md 1개 = 1행      │                  │  Layer 1/2 정규화 토큰    │
@@ -115,19 +113,20 @@ DDL은 SQLite 기준의 논리 스키마이며, 실제 정의는 SQLAlchemy 2.0 
 - **제약 이름**: 모든 CHECK/UNIQUE/FK/Index에 명시적 이름을 부여한다. SQLAlchemy `MetaData(naming_convention=...)` 규칙(`ck_`, `uq_`, `fk_`, `ix_` 접두사)을 강제하여 마이그레이션 도구(Alembic) 도입 시 가짜 변경 감지를 방지한다.
 - **AUTOINCREMENT**: 정수 키를 쓰는 테이블에는 `sqlite_autoincrement=True`를 명시하여 삭제된 rowid 재사용으로 인한 순서 왜곡을 차단한다.
 
-### 5.1 `schema_meta`
+### 5.1 스키마 버전 (`PRAGMA user_version`)
+
+스키마 버전은 테이블이 아니라 SQLite DB 헤더의 `PRAGMA user_version`(정수)에 보관한다. 별도 테이블을 두지 않는 이유는 §1-1 불변식 때문이다 — DB는 소멸 가능한 작업 저장소이므로, 필요한 것은 데이터 보존형 마이그레이션이 아니라 "이 DB 파일이 현재 코드와 호환되는가"를 판별하는 경량 호환성 게이트다.
 
 ```sql
-CREATE TABLE schema_meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
--- 초기 행: ('schema_version', '1')
+-- 신규 DB: 헤더 기본값 0 → 부팅 시 기대 버전으로 스탬프
+PRAGMA user_version = 1;
 ```
 
-테이블·클래스명은 `schema_meta`(`SchemaMeta`)를 사용한다. 공통 감사 컬럼(§5 공통 규약)을 포함한다.
-
-부팅 시 `schema_version`을 읽어 코드가 기대하는 버전과 비교한다. 초기 버전은 Alembic 없이 `create_all` + 버전 검사로 운영하고, 파괴적 변경이 필요한 시점에 마이그레이션 도구를 도입한다(§9).
+- **부팅 절차**(`backend/database/db.py`, R20): `create_all` 직후 `PRAGMA user_version`을 읽는다.
+  - `0`(신규 파일) → 기대 버전(`EXPECTED_SCHEMA_VERSION`)으로 스탬프한다.
+  - 기대 버전과 일치 → 통과.
+  - 불일치 → `SchemaVersionMismatch`를 발생시키고, **DB 삭제 후 `DESIGN.md` 재인덱싱**을 복구 경로로 안내한다(§9). 데이터를 보존하며 마이그레이션하지 않는다.
+- Postgres는 현재 범위 밖(YAGNI)이므로 방언 중립성보다 무테이블 경량성을 택한다. 실제 Postgres 이관 또는 파괴적 스키마 변경이 필요한 시점에 Alembic을 도입하며, 그때 Alembic의 `alembic_version`이 이 역할을 흡수한다(§8, §9).
 
 ### 5.2 `design_systems`
 
@@ -353,10 +352,10 @@ DESIGN.md 표준 스펙은 참조 문법으로 `{path.to.token}` 문자열 포�
 | R11 (뷰포트 매트릭스) | `candidates.position` |
 | R14/R15 (코드 내보내기) | `exports.format` |
 | R16 (DESIGN.md 양방향 직렬화) | `design_systems` 동기화 컬럼(`title`, `spec_version`, `front_matter_extras`, `front_matter_raw`, `guide_markdown`, `source_*`), `design_tokens` |
-| R17 (SQLite 영속화) | 전체 스키마 + `schema_meta` |
+| R17 (SQLite 영속화) | 전체 스키마 + `PRAGMA user_version` |
 | R18 (관리 UI) | `design_systems`, `design_tokens.origin` |
 | R19 (런 보존 정책) | `prototype_runs.status`, `prototype_runs.created_time` |
-| R20 (스키마 버전 검사) | `schema_meta` |
+| R20 (스키마 버전 검사) | `PRAGMA user_version` |
 | R21 (파일 선검사 및 재인덱싱) | `design_systems.source_mtime`, `design_systems.source_size`, `design_systems.source_digest` |
 | R22 (파생 디자인 시스템) | `design_systems.derived_from_id`, `design_systems.source_path` |
 
@@ -386,7 +385,7 @@ Postgres 확장 경로는 열어두되, 현재 단계의 준비 작업은 방언
 
 ## 9. 마이그레이션 및 데이터 보존
 
-- **0.1.0 초기 버전**: `MappedBase.metadata.create_all()` 및 `schema_meta.schema_version` 버전 검사를 적용한다. 버전 불일치 시 명확한 오류 및 안내를 제공한다.
+- **0.1.0 초기 버전**: `MappedBase.metadata.create_all()` 및 `PRAGMA user_version` 버전 검사를 적용한다(§5.1). 버전 불일치 시 명확한 오류 및 안내(DB 삭제 후 재인덱싱)를 제공한다.
 - **복구 메커니즘**: DB가 손상되거나 삭제되더라도 `DESIGN.md` 파일들로부터 디자인 시스템과 토큰 트리를 언제든 재인덱싱하여 복구할 수 있다.
 - **런 보존 정책**: 런 데이터는 기본값으로 디자인 시스템당 최근 50개를 유지하며, 초과분은 `archived` 상태로 전환 후 `protokflow prune` 명령으로 정리한다. 디자인 시스템과 토큰은 자동 삭제 대상에서 제외된다.
 - **커넥션 설정**: 커넥션 초기화 시 `PRAGMA foreign_keys=ON`, `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout`을 강제하여 CASCADE 정합성과 다중 프로세스 동시성을 보장한다.

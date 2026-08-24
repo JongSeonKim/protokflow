@@ -6,14 +6,14 @@ import os
 from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect, select
-from sqlalchemy.engine import Connection
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.protokflow.model import DesignSystem, SchemaMeta
+from backend.app.protokflow.model import DesignSystem
 from backend.database import db
 from backend.database.db import async_db_session as imported_async_db_session
 from tests.support import db as db_fixtures
+from tests.support.db import table_names
 
 
 STORAGE_TABLES = {
@@ -22,21 +22,18 @@ STORAGE_TABLES = {
     "design_tokens",
     "exports",
     "prototype_runs",
-    "schema_meta",
     "slot_contents",
     "token_patches",
 }
 
 
-@pytest.mark.asyncio
 async def test_test_db_creates_all_storage_tables(test_db: AsyncSession) -> None:
     tables = await test_db.connection()
-    names = await tables.run_sync(inspect_table_names)
+    names = await tables.run_sync(table_names)
 
     assert STORAGE_TABLES <= set(names)
 
 
-@pytest.mark.asyncio
 async def test_test_db_rows_do_not_leak_between_tests(test_db: object) -> None:
     del test_db
     async with db.async_db_session.begin() as session:
@@ -49,7 +46,6 @@ async def test_test_db_rows_do_not_leak_between_tests(test_db: object) -> None:
     assert rows[0].slug == "fixture-isolation"
 
 
-@pytest.mark.asyncio
 async def test_test_db_starts_clean_after_previous_test(test_db: object) -> None:
     del test_db
     async with imported_async_db_session() as session:
@@ -86,11 +82,6 @@ def test_test_database_path_guard_rejects_invalid_names_or_home(
         db_fixtures.validate_test_database_path(path.resolve(), home=home)
 
 
-def inspect_table_names(connection: Connection) -> list[str]:
-    return inspect(connection).get_table_names()
-
-
-@pytest.mark.asyncio
 async def test_test_engine_path_uses_isolated_home_and_name(
     test_engine: object,
 ) -> None:
@@ -112,7 +103,6 @@ def test_database_cleanup_removes_db_and_sqlite_sidecars(tmp_path: Path) -> None
     )
 
 
-@pytest.mark.asyncio
 async def test_factory_proxy_begin_and_import_binding_use_test_engine(
     test_db: object,
 ) -> None:
@@ -124,7 +114,7 @@ async def test_factory_proxy_begin_and_import_binding_use_test_engine(
         row = await session.scalar(
             select(DesignSystem).where(DesignSystem.slug == "proxy-route")
         )
-        schema_version = await session.scalar(select(SchemaMeta.value))
+        schema_version = await session.scalar(text("PRAGMA user_version"))
 
     assert row is not None
     assert schema_version == db.EXPECTED_SCHEMA_VERSION

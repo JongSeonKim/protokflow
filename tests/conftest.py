@@ -1,8 +1,8 @@
-"""Project-wide pytest bootstrap.
+"""Project-wide pytest configuration and bootstrap.
 
-The environment preamble intentionally imports only the standard library and
-runs before any backend module.  Database singletons therefore observe the
-test-only namespace at import time.
+Sets up isolated temporary test environments and environment variables
+(``PROTOKFLOW_HOME``, ``PROTOKFLOW_DATABASE_URL``) before database modules
+are imported, ensuring tests never interact with production data.
 """
 
 from __future__ import annotations
@@ -13,20 +13,25 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-pytest_plugins = ("tests.support.db",)
+from backend.database.url import create_database_url
 
-# Capture the repository's production location before the test home is forced.
-# This is exposed for the isolation meta-suite without importing the backend.
+pytest_plugins = ("tests.fixtures.db",)
+
+# Resolved path to the repository-local production database, used by meta-tests
+# to verify that test executions do not write to or alter production state.
 PRODUCTION_DB_PATH = (Path.cwd() / ".protokflow" / "protokflow.db").resolve()
 
+# Create an isolated temporary directory for this test process/worker.
 _TEST_HOME = Path(tempfile.mkdtemp(prefix="protokflow-test-")).resolve()
 os.environ.setdefault("PROTOKFLOW_TEST_RUN_ID", f"r{uuid4().hex[:8]}")
-os.environ["PROTOKFLOW_TEST"] = "1"
 os.environ["PROTOKFLOW_HOME"] = str(_TEST_HOME)
+
+# Pre-configure the database URL so module-level engine singletons bind to the test DB on import.
+os.environ["PROTOKFLOW_DATABASE_URL"] = create_database_url(unittest=True)
 
 
 def pytest_unconfigure(config: object) -> None:
-    """Best-effort cleanup of this pytest process's temporary home."""
+    """Clean up the temporary test home directory when the test session ends."""
     del config
     try:
         shutil.rmtree(_TEST_HOME)

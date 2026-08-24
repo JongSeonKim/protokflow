@@ -1,4 +1,4 @@
-"""Export record table (schema doc §5.8)."""
+"""Export record model."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from backend.common.model import Base
 
 
 class Export(Base):
-    """Metadata of exported code; bodies live in the user repository."""
+    """Export record for generated prototype code."""
 
     __tablename__ = "exports"
     __table_args__ = (
@@ -35,7 +35,7 @@ class Export(Base):
         sort_order=-999,
         comment="ULID primary key",
     )
-    run_id: Mapped[str] = mapped_column(Ulid(), comment="Parent run")
+    run_id: Mapped[str] = mapped_column(Ulid(), comment="Parent run ID")
     candidate_key: Mapped[str] = mapped_column(
         sa.String(64), comment="Exported candidate key"
     )
@@ -44,5 +44,5 @@ class Export(Base):
         sa.String(1024), default=None, comment="Written file path, if any"
     )
     byte_size: Mapped[int | None] = mapped_column(
-        sa.Integer, default=None, comment="Emitted payload size"
+        sa.Integer, default=None, comment="Emitted payload size in bytes"
     )

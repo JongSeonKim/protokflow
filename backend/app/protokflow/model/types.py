@@ -1,12 +1,4 @@
-"""Unified custom SQL types for protokflow storage models (schema doc §8).
-
-Three portable types every storage model must use, so the future Postgres
-move is a variant swap instead of a schema audit:
-
-- `Timestamp` — rejects naive datetimes, normalizes aware ones to UTC.
-- `Ulid`      — TEXT(26) fixed-length identifier.
-- `Json`      — sa.JSON mapping (SQLite TEXT <-> Postgres jsonb later).
-"""
+"""Custom SQLAlchemy types for protokflow models."""
 
 from __future__ import annotations
 
@@ -20,12 +12,12 @@ import sqlalchemy as sa
 
 from sqlalchemy import TypeDecorator
 
-# Crockford base32 alphabet (ULID spec): no I, L, O, U.
+# Crockford base32 alphabet for ULID
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
 def new_ulid() -> str:
-    """Generate a 26-char ULID: 48-bit ms timestamp + 80-bit randomness."""
+    """Generate a 26-character ULID."""
     timestamp_ms = int(time.time() * 1000) & ((1 << 48) - 1)
     randomness = int.from_bytes(os.urandom(10), "big") & ((1 << 80) - 1)
     value = (timestamp_ms << 80) | randomness
@@ -33,12 +25,12 @@ def new_ulid() -> str:
 
 
 def utcnow() -> datetime:
-    """UTC-aware now() for model defaults."""
+    """Return current UTC datetime."""
     return datetime.now(UTC)
 
 
 class Timestamp(TypeDecorator[datetime]):
-    """UTC-aware-only datetime — naive values are rejected at bind time."""
+    """UTC datetime type that enforces timezone awareness."""
 
     impl = sa.DateTime(timezone=True)
     cache_ok = True
@@ -53,11 +45,7 @@ class Timestamp(TypeDecorator[datetime]):
         if value is None:
             return None
         if value.tzinfo is None or value.utcoffset() is None:
-            # Prefect-style hard rejection: a local-timezone accident must
-            # fail loudly instead of silently shifting stored instants.
             raise ValueError("Timestamps must have a timezone.")
-        # Non-UTC aware values are normalized to UTC, then stored. SQLite's
-        # DATETIME storage format drops tzinfo, so read-back re-attaches UTC.
         return value.astimezone(UTC)
 
     def process_result_value(
@@ -69,7 +57,7 @@ class Timestamp(TypeDecorator[datetime]):
 
 
 class Ulid(TypeDecorator[str]):
-    """TEXT(26) fixed-length ULID identifier."""
+    """Fixed-length (26-char) ULID string identifier."""
 
     impl = sa.String(26)
     cache_ok = True
@@ -90,7 +78,7 @@ class Ulid(TypeDecorator[str]):
 
 
 class Json(TypeDecorator[Any]):
-    """sa.JSON mapping for small, non-indexed structures."""
+    """JSON type mapping."""
 
     impl = sa.JSON
     cache_ok = True

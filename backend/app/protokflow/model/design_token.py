@@ -1,4 +1,4 @@
-"""Layer 1/2 normalized design token table (schema doc §5.3)."""
+"""Design token model for storing normalized tokens."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from backend.common.model import Base
 
 
 class DesignToken(Base):
-    """Row-per-token normalization; reference expressions stored verbatim."""
+    """Normalized design token."""
 
     __tablename__ = "design_tokens"
     __table_args__ = (
@@ -28,7 +28,7 @@ class DesignToken(Base):
             ["design_systems.id"],
             ondelete="CASCADE",
         ),
-        {"comment": "Layer 1/2 normalized design tokens"},
+        {"comment": "Normalized design tokens"},
     )
 
     id: Mapped[str] = mapped_column(
@@ -47,7 +47,7 @@ class DesignToken(Base):
         sa.String(512), comment="e.g. colors.primary"
     )
     value: Mapped[str] = mapped_column(
-        sa.Text, comment="Literal or reference expression as written"
+        sa.Text, comment="Token value or reference expression"
     )
     origin: Mapped[str] = mapped_column(
         sa.String(64), default="design_md", comment="design_md | admin_ui | agent"

@@ -1,4 +1,4 @@
-"""DESIGN.md-mapped design system table (schema doc §5.2)."""
+"""Design system model mapped to DESIGN.md files."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from backend.common.model import Base
 
 
 class DesignSystem(Base):
-    """Self-contained sibling design system; one DESIGN.md = one row."""
+    """Design system configuration and source metadata."""
 
     __tablename__ = "design_systems"
     __table_args__ = (
@@ -24,7 +24,7 @@ class DesignSystem(Base):
             ["design_systems.id"],
             ondelete="SET NULL",
         ),
-        {"comment": "DESIGN.md-mapped sibling design systems"},
+        {"comment": "Design systems"},
     )
 
     id: Mapped[str] = mapped_column(
@@ -36,7 +36,7 @@ class DesignSystem(Base):
         comment="ULID primary key",
     )
     slug: Mapped[str] = mapped_column(
-        sa.String(256), comment="User/agent-facing identifier, e.g. default"
+        sa.String(256), comment="Unique slug identifier (e.g. default)"
     )
     title: Mapped[str] = mapped_column(sa.Text, comment="Front matter name")
     description: Mapped[str | None] = mapped_column(
@@ -56,7 +56,7 @@ class DesignSystem(Base):
     front_matter_raw: Mapped[str] = mapped_column(
         sa.Text,
         default="",
-        comment="Verbatim front matter: comments, blank lines, quote style, key order",
+        comment="Raw front matter text",
     )
     guide_markdown: Mapped[str] = mapped_column(
         sa.Text, default="", comment="DESIGN.md body without front matter"
@@ -65,13 +65,13 @@ class DesignSystem(Base):
         sa.String(1024), default=None, comment="Linked DESIGN.md path; NULL = DB-only"
     )
     source_digest: Mapped[str | None] = mapped_column(
-        sa.String(256), default=None, comment="sha256 at last sync"
+        sa.String(256), default=None, comment="sha256 digest at last sync"
     )
     source_mtime: Mapped[float | None] = mapped_column(
-        sa.Float, default=None, comment="mtime precheck (§6)"
+        sa.Float, default=None, comment="Source file modification time"
     )
     source_size: Mapped[int | None] = mapped_column(
-        sa.Integer, default=None, comment="size precheck (§6)"
+        sa.Integer, default=None, comment="Source file size in bytes"
     )
     synced_at: Mapped[datetime | None] = mapped_column(
         Timestamp(), default=None, comment="Last file sync time"

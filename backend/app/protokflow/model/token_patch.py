@@ -1,4 +1,4 @@
-"""Append-only token patch history table (schema doc §5.6)."""
+"""Token patch history model."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from backend.common.model import Base
 
 
 class TokenPatch(Base):
-    """Append-only patch log; current state lives in candidates overrides."""
+    """Append-only patch log for candidate token modifications."""
 
     __tablename__ = "token_patches"
     __table_args__ = (
@@ -22,9 +22,7 @@ class TokenPatch(Base):
             ["candidates.run_id", "candidates.candidate_key"],
             ondelete="CASCADE",
         ),
-        # seq means application order; sqlite_autoincrement forbids rowid
-        # reuse after pruning, which would silently corrupt that meaning.
-        {"sqlite_autoincrement": True, "comment": "Append-only token patch history"},
+        {"sqlite_autoincrement": True, "comment": "Token patch history"},
     )
 
     seq: Mapped[int] = mapped_column(
@@ -33,9 +31,9 @@ class TokenPatch(Base):
         autoincrement=True,
         init=False,
         sort_order=-999,
-        comment="Monotonic application order",
+        comment="Sequential patch order",
     )
-    run_id: Mapped[str] = mapped_column(Ulid(), comment="Parent run")
+    run_id: Mapped[str] = mapped_column(Ulid(), comment="Parent run ID")
     candidate_key: Mapped[str] = mapped_column(
         sa.String(64), comment="Target candidate key"
     )
@@ -43,7 +41,7 @@ class TokenPatch(Base):
         sa.String(512), comment="Patched token path"
     )
     origin: Mapped[str] = mapped_column(sa.String(64), comment="agent | admin_ui")
-    next_value: Mapped[str] = mapped_column(sa.Text, comment="Value after the patch")
+    next_value: Mapped[str] = mapped_column(sa.Text, comment="Value after patch")
     previous_value: Mapped[str | None] = mapped_column(
-        sa.Text, default=None, comment="NULL = new override"
+        sa.Text, default=None, comment="Value before patch (None if newly added)"
     )

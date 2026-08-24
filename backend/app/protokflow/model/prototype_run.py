@@ -1,4 +1,4 @@
-"""Prototype run table (schema doc §5.4)."""
+"""Prototype run model."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from backend.common.model import Base
 
 
 class PrototypeRun(Base):
-    """One prototyping run; carries the resolved token snapshot for replay."""
+    """Prototype run session holding token snapshots."""
 
     __tablename__ = "prototype_runs"
     __table_args__ = (
@@ -26,7 +26,7 @@ class PrototypeRun(Base):
             ["design_systems.id"],
             ondelete="CASCADE",
         ),
-        {"comment": "Prototype runs with token snapshots"},
+        {"comment": "Prototype runs"},
     )
 
     id: Mapped[str] = mapped_column(
@@ -38,17 +38,17 @@ class PrototypeRun(Base):
         comment="ULID primary key",
     )
     design_system_id: Mapped[str] = mapped_column(
-        Ulid(), comment="Origin system (filter/provenance)"
+        Ulid(), comment="Associated design system ID"
     )
-    screen_goal: Mapped[str] = mapped_column(sa.Text, comment="What this run explores")
+    screen_goal: Mapped[str] = mapped_column(sa.Text, comment="Goal of this run")
     layout_preset: Mapped[str] = mapped_column(
-        sa.String(128), comment="e.g. split-card"
+        sa.String(128), comment="Layout preset identifier (e.g. split-card)"
     )
     token_snapshot: Mapped[dict[str, Any]] = mapped_column(
-        Json(), comment="Resolved Layer 1/2 flat map at run creation (§5.4)"
+        Json(), comment="Resolved token flat map at run creation"
     )
     variation_axes: Mapped[list[str]] = mapped_column(
-        Json(), default_factory=list, comment="Varied Layer 3 token paths"
+        Json(), default_factory=list, comment="Varied token paths"
     )
     status: Mapped[str] = mapped_column(
         sa.String(64), default="active", comment="active | exported | archived"

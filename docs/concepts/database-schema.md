@@ -3,7 +3,7 @@
 > 상태: 확정 설계 (v0.2) · 대상 릴리스: `protokflow` 0.1.0
 > 관련 문서: [디자인 토큰 아키텍처](./token-3tier-architecture.md) · [Protokflow 서버 플랜](../plans/2026-08-20-protokflow-server-plan.md)
 
-이 문서는 `protokflow.storage` 계층의 영속 데이터 모델 및 저장 경계, 동기화 정책을 정의한다. 플랜의 요구사항(R16~R23)과 설계 결정(KD6~KD8)을 반영한 단일 소스 명세이다.
+이 문서는 저장소 계층(`backend/app/protokflow/model/`)의 영속 데이터 모델 및 저장 경계, 동기화 정책을 정의한다. 플랜의 요구사항(R16~R23)과 설계 결정(KD6~KD8)을 반영한 단일 소스 명세이다.
 
 ---
 
@@ -105,12 +105,13 @@ DB = f(DESIGN.md) + 소멸 가능한 런 이력
 
 ## 5. 테이블 정의
 
-DDL은 SQLite 기준의 논리 스키마이며, 실제 정의는 SQLModel 모델이 단일 소스이다(§8). 공통 규약:
+DDL은 SQLite 기준의 논리 스키마이며, 실제 정의는 SQLAlchemy 2.0 모델(`backend/app/protokflow/model/`)이 단일 소스이다(§8). 공통 규약:
 
 - **기본키**: `TEXT` ULID(사전순 정렬 = 생성순). 정수 자동증가는 패치 이력 테이블(`token_patches`)에만 한정한다.
-- **타임스탬프**: 애플리케이션은 UTC-aware `datetime`으로 다루고, `DateTime(timezone=True)`로 매핑한다. SQLite는 ISO-8601 TEXT, Postgres는 `timestamptz`로 저장된다.
+- **공통 감사 컬럼 (`Base`)**: 모든 테이블은 `backend/common/model.py`의 `Base`(`DateTimeMixin` + `LogicalDeleteMixin`)를 상속하여 `created_time`(생성 시각), `updated_time`(NULL 허용, 갱신 시 자동 기록), `deleted`(기본 `0`, 논리 삭제 표식), `deleted_time`을 공통 보유한다. 아래 테이블 정의에는 도메인 컬럼만 기재한다.
+- **타임스탬프**: 감사 컬럼(`created_time`/`updated_time`/`deleted_time`)은 공통 `Base`의 `TimeZone` 타입(`DateTime(timezone=True)`, `DATETIME_TIMEZONE` 기준 aware)으로 매핑한다. 도메인 타임스탬프(`design_systems.synced_at`)는 `Timestamp`(naive 거부, UTC 정규화)를 사용한다(§8). SQLite는 ISO-8601 TEXT, Postgres는 `timestamptz`로 저장된다.
 - **JSON 컬럼**: `sa.JSON`(SQLite TEXT ↔ Postgres `jsonb`). 인덱싱 대상이 아닌 소규모 구조에만 사용한다.
-- **삭제**: 소유 관계는 모두 `ON DELETE CASCADE`. SQLite 커넥션마다 `PRAGMA foreign_keys=ON`을 적용한다.
+- **삭제**: 소유 관계는 모두 `ON DELETE CASCADE`. SQLite 커넥션마다 `PRAGMA foreign_keys=ON`을 적용한다. `deleted` 플래그는 런 프루닝·아카이빙 등 소프트 삭제 표식용이며, FK 참조 무결성은 여전히 물리 CASCADE로 처리된다.
 - **제약 이름**: 모든 CHECK/UNIQUE/FK/Index에 명시적 이름을 부여한다. SQLAlchemy `MetaData(naming_convention=...)` 규칙(`ck_`, `uq_`, `fk_`, `ix_` 접두사)을 강제하여 마이그레이션 도구(Alembic) 도입 시 가짜 변경 감지를 방지한다.
 - **AUTOINCREMENT**: 정수 키를 쓰는 테이블에는 `sqlite_autoincrement=True`를 명시하여 삭제된 rowid 재사용으로 인한 순서 왜곡을 차단한다.
 
@@ -123,6 +124,8 @@ CREATE TABLE schema_meta (
 );
 -- 초기 행: ('schema_version', '1')
 ```
+
+테이블·클래스명은 `schema_meta`(`SchemaMeta`)를 사용한다. 공통 감사 컬럼(§5 공통 규약)을 포함한다.
 
 부팅 시 `schema_version`을 읽어 코드가 기대하는 버전과 비교한다. 초기 버전은 Alembic 없이 `create_all` + 버전 검사로 운영하고, 파괴적 변경이 필요한 시점에 마이그레이션 도구를 도입한다(§9).
 
@@ -142,9 +145,7 @@ CREATE TABLE design_systems (
   source_digest   TEXT,                           -- 마지막 동기화 시점 파일의 sha256
   source_mtime    REAL,                           -- mtime (선검사용)
   source_size     INTEGER,                        -- 크기  (선검사용)
-  synced_at       TIMESTAMP,
-  created_at      TIMESTAMP NOT NULL,
-  updated_at      TIMESTAMP NOT NULL
+  synced_at       TIMESTAMP
 );
 ```
 
@@ -192,7 +193,6 @@ CREATE TABLE design_tokens (
   value        TEXT      NOT NULL,   -- 리터럴 또는 참조 표현식 '{colors.primary}'
   origin       TEXT      NOT NULL DEFAULT 'design_md' CONSTRAINT ck_design_tokens_origin
                          CHECK (origin IN ('design_md', 'admin_ui', 'agent')),
-  updated_at   TIMESTAMP NOT NULL,
   CONSTRAINT uq_design_tokens_ds_path UNIQUE (design_system_id, token_path)
 );
 CREATE INDEX ix_design_tokens_ds_tier ON design_tokens (design_system_id, tier);
@@ -213,10 +213,9 @@ CREATE TABLE prototype_runs (
   variation_axes JSON      NOT NULL DEFAULT '[]',  -- ["pattern.layout.mode"]
   token_snapshot JSON      NOT NULL,               -- 해석 완료된 Layer 1/2 평면 맵
   status         TEXT      NOT NULL DEFAULT 'active' CONSTRAINT ck_prototype_runs_status
-                           CHECK (status IN ('active', 'exported', 'archived')),
-  created_at     TIMESTAMP NOT NULL
+                           CHECK (status IN ('active', 'exported', 'archived'))
 );
-CREATE INDEX ix_prototype_runs_ds_created ON prototype_runs (design_system_id, created_at);
+CREATE INDEX ix_prototype_runs_ds_created ON prototype_runs (design_system_id, created_time);
 ```
 
 - **`token_snapshot`**: 런 생성 시점에 디자인 시스템 토큰을 캐스케이드 해석한 결과를 그대로 스냅샷으로 영속화한다. 이후 디자인 시스템 토큰이 변경되더라도 기존 런의 프리뷰와 내보내기 결과는 불변으로 유지되며, 복잡한 리비전 그래프 없이도 렌더링 재현성을 보장한다.
@@ -233,8 +232,6 @@ CREATE TABLE candidates (
   initial_tokens  JSON      NOT NULL DEFAULT '{}',  -- 생성 시 Layer 3 파라미터
   token_overrides JSON      NOT NULL DEFAULT '{}',  -- 패치 누적 후 현재 유효값
   snapshot_path   TEXT,                             -- .protokflow/snapshots/*.png
-  created_at      TIMESTAMP NOT NULL,
-  updated_at      TIMESTAMP NOT NULL,
   PRIMARY KEY (run_id, candidate_key)
 );
 ```
@@ -255,7 +252,6 @@ CREATE TABLE token_patches (
   next_value     TEXT      NOT NULL,
   origin         TEXT      NOT NULL CONSTRAINT ck_token_patches_origin
                            CHECK (origin IN ('agent', 'admin_ui')),
-  created_at     TIMESTAMP NOT NULL,
   FOREIGN KEY (run_id, candidate_key)
     REFERENCES candidates (run_id, candidate_key) ON DELETE CASCADE
 );
@@ -263,6 +259,7 @@ CREATE INDEX ix_token_patches_target ON token_patches (run_id, candidate_key, se
 ```
 
 - **추가 전용(append-only) 이력 테이블**: 되돌리기(undo), 작업 회고, 확정 시 변경 요약 생성을 위해 패치 로그를 보존한다.
+- 행이 한 번 삽입되면 갱신되지 않으므로 `updated_time`은 NULL, `deleted`는 `0`으로 유지된다(공통 감사 컬럼은 스키마에 존재하나 이 테이블에서는 미사용).
 - 현재 상태 읽기는 `candidates.token_overrides`에서 수행하며, 패치 로그 역재생을 통한 상태 계산은 수행하지 않는다.
 - `seq`는 `sqlite_autoincrement=True`를 적용하여 삭제된 rowid 재사용으로 인한 순서 왜곡을 방지한다.
 
@@ -276,7 +273,6 @@ CREATE TABLE slot_contents (
   content       TEXT      NOT NULL,
   content_kind  TEXT      NOT NULL DEFAULT 'text' CONSTRAINT ck_slot_contents_kind
                           CHECK (content_kind IN ('text', 'html', 'markdown')),
-  updated_at    TIMESTAMP NOT NULL,
   PRIMARY KEY (run_id, candidate_key, slot_key),
   FOREIGN KEY (run_id, candidate_key)
     REFERENCES candidates (run_id, candidate_key) ON DELETE CASCADE
@@ -298,7 +294,6 @@ CREATE TABLE exports (
                                             'html-css', 'json-tokens')),
   output_path   TEXT,                    -- 파일 경로(기록 가능한 경우)
   byte_size     INTEGER,
-  created_at    TIMESTAMP NOT NULL,
   FOREIGN KEY (run_id, candidate_key)
     REFERENCES candidates (run_id, candidate_key) ON DELETE CASCADE
 );
@@ -352,7 +347,7 @@ CREATE TABLE exports (
 | R16 (DESIGN.md 양방향 직렬화) | `design_systems` 동기화 컬럼(`title`, `spec_version`, `front_matter_extras`, `guide_markdown`, `source_*`), `design_tokens` |
 | R17 (SQLite 영속화) | 전체 스키마 + `schema_meta` |
 | R18 (관리 UI) | `design_systems`, `design_tokens.origin` |
-| R19 (런 보존 정책) | `prototype_runs.status`, `prototype_runs.created_at` |
+| R19 (런 보존 정책) | `prototype_runs.status`, `prototype_runs.created_time` |
 | R20 (스키마 버전 검사) | `schema_meta` |
 | R21 (파일 선검사 및 재인덱싱) | `design_systems.source_mtime`, `design_systems.source_size`, `design_systems.source_digest` |
 | R22 (파생 디자인 시스템) | `design_systems.derived_from_id`, `design_systems.source_path` |
@@ -364,11 +359,12 @@ CREATE TABLE exports (
 Postgres 확장 경로는 열어두되, 현재 단계의 준비 작업은 방언과 무관하게 데이터 정합성과 표준 규약을 높이는 작업에 한정한다.
 
 **현재 적용 항목 (표준 SQL 및 타입 안전성)**
-- `protokflow.storage.types` 모듈을 통해 단일화된 커스텀 타입 정의:
-  - `Timestamp` — naive `datetime`을 거부하고 UTC aware 객체만 수용.
+- `backend/app/protokflow/model/types` 모듈을 통해 단일화된 커스텀 타입 정의:
+  - `Timestamp` — naive `datetime`을 거부하고 UTC aware 객체만 수용·정규화. 도메인 타임스탬프 컬럼(`design_systems.synced_at`)에 적용.
   - `Ulid` — TEXT(26) 기반 고정 길이 식별자.
   - `Json` — `sa.JSON` 매핑.
 - 모든 제약 조건(CHECK, UNIQUE, FK, Index)에 명시적 네이밍 규칙 적용.
+- 감사 컬럼(`created_time`/`updated_time`/`deleted_time`)은 공통 `Base`의 `TimeZone` 타입을 따른다(§5 공통 규약). 저장 시각의 UTC 통일이 필요하면 `DATETIME_TIMEZONE=UTC`로 설정한다.
 - `CHECK` 제약 열거값을 Pydantic v2 Enum 문자열과 동기화.
 - SQLite 전용 문법(ROWID 의존, `INSERT OR REPLACE` 등)을 배제하고 표준 SQLAlchemy API 사용.
 
@@ -382,7 +378,7 @@ Postgres 확장 경로는 열어두되, 현재 단계의 준비 작업은 방언
 
 ## 9. 마이그레이션 및 데이터 보존
 
-- **0.1.0 초기 버전**: `SQLModel.metadata.create_all()` 및 `schema_meta.schema_version` 버전 검사를 적용한다. 버전 불일치 시 명확한 오류 및 안내를 제공한다.
+- **0.1.0 초기 버전**: `MappedBase.metadata.create_all()` 및 `schema_meta.schema_version` 버전 검사를 적용한다. 버전 불일치 시 명확한 오류 및 안내를 제공한다.
 - **복구 메커니즘**: DB가 손상되거나 삭제되더라도 `DESIGN.md` 파일들로부터 디자인 시스템과 토큰 트리를 언제든 재인덱싱하여 복구할 수 있다.
 - **런 보존 정책**: 런 데이터는 기본값으로 디자인 시스템당 최근 50개를 유지하며, 초과분은 `archived` 상태로 전환 후 `protokflow prune` 명령으로 정리한다. 디자인 시스템과 토큰은 자동 삭제 대상에서 제외된다.
 - **커넥션 설정**: 커넥션 초기화 시 `PRAGMA foreign_keys=ON`, `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout`을 강제하여 CASCADE 정합성과 다중 프로세스 동시성을 보장한다.

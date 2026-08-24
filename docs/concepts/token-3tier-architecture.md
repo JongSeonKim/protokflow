@@ -97,7 +97,7 @@ components:
 
 ## 3. 다중 디자인 시스템과 DESIGN.md 동기화
 
-Protokflow는 로컬 단독 개발 환경을 위한 임베디드 **SQLite**(`.protokflow/protokflow.db`)를 기본 저장소로 사용하며, **SQLAlchemy/SQLModel** 추상화를 통해 향후 **Postgres** 엔터프라이즈 환경으로 확장이 가능합니다.
+Protokflow는 로컬 단독 개발 환경을 위한 임베디드 **SQLite**(`.protokflow/protokflow.db`)를 기본 저장소로 사용하며, **SQLAlchemy** 추상화를 통해 향후 **Postgres** 엔터프라이즈 환경으로 확장이 가능합니다.
 
 디자인 시스템은 프로젝트 내 여러 테마/컨텍스트(예: `default`, `admin-dark`, `mobile`)를 격리 관리하는 단위이며, 하나의 디자인 시스템은 하나의 `DESIGN.md`(Markdown 가이드 본문 + Layer 1/2 토큰 트리)에 1:1로 대응합니다. Layer 3(Patterns)는 디자인 시스템에 저장되지 않고 프로토타입 런 실행 시점에 결정되는 런타임 파라미터입니다.
 

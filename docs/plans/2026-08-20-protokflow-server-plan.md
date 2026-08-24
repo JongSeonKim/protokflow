@@ -19,7 +19,7 @@ execution: code
 AI 코딩 에이전트(Claude Desktop, Cursor, Codex 등)와 인간 엔지니어가 단 1회의 도구 호출로 `DESIGN.md` 기반 다중 디자인 시스템 및 3계층 디자인 토큰 기반 UI 후보군을 생성하고, 로컬 브라우저에서 초저지연(<16ms) 핫리로드로 나란히 비교·수정하며, 탐색 결과를 파생 디자인 시스템으로 축적했다가 원본 `DESIGN.md`에 승격하고, 무오류 React/Tailwind 프로덕션 코드로 즉시 내보낼 수 있는 독립형 프로토타이핑 엔진을 구축한다.
 
 ### Means
-전송 프로토콜과 독립된 순수 Python 3계층 토큰 엔진(`protokflow.core`) 및 SQLite/SQLModel 기반 `DESIGN.md` 디자인 시스템 저장소를 구축하고, 상위에 MCP stdio 도구 어댑터(`protokflow.adapters.mcp`)와 Starlette/FastAPI ASGI 웹 프리뷰 및 관리 어댑터(`protokflow.adapters.http`)를 분리 제공하는 하이브리드 코어 아키텍처.
+전송 프로토콜과 독립된 순수 Python 3계층 토큰 엔진(`protokflow.core`) 및 SQLite/SQLAlchemy 기반 `DESIGN.md` 디자인 시스템 저장소를 구축하고, 상위에 MCP stdio 도구 어댑터(`protokflow.adapters.mcp`)와 Starlette/FastAPI ASGI 웹 프리뷰 및 관리 어댑터(`protokflow.adapters.http`)를 분리 제공하는 하이브리드 코어 아키텍처.
 
 ### Product Authority
 이 계획서는 `protokflow`의 코어 토큰 해석 엔진, MCP 및 HTTP 듀얼 어댑터 인터페이스, 브라우저 실시간 프리뷰 쉘, React/Tailwind 코드 추출 사양을 규정한다. 외부 클라우드 디자인 툴 실시간 양방향 동기화나 백엔드 데이터 목킹은 범위 외로 정의한다.
@@ -43,7 +43,7 @@ Protokflow는 Google Labs의 `DESIGN.md` 표준 포맷(YAML Front Matter + Markd
 - **KD3 (Zero-Compile CSS Custom Property Injection for <16ms Hot-Reload)**: Astryx 토큰을 브라우저 CSS 변수로 매핑하고, `patch_tokens` 호출 시 WebSocket으로 토큰 델타를 주입하여 전체 HTML 재렌더링 없이 스타일을 즉시 모핑한다. 16ms 이내 초저지연 반응성을 보장하고 브라우저 입력 포커스 및 스크롤 위치를 보존한다. `Governs R10`
 - **KD4 (Single-Source Pydantic v2 Schemas for MCP Tools & OpenAPI Specs)**: 토큰 계층 및 6종 도구 인터페이스를 Pydantic v2 모델로 정의하여 MCP JSONSchema와 FastAPI Swagger 문서를 단일 소스에서 자동 동기화하고 스키마 드리프트를 방지한다. `Governs R5, R12`
 - **KD5 (Deterministic AST-Free Template Swizzle Exporter)**: `export_prototype`은 사전 검증된 컴포넌트 템플릿에 토큰을 1:1 치환하는 스위즐(swizzle) 방식으로 100% 문법 무결한 React/Tailwind 코드를 방출한다. `Governs R14, R15`
-- **KD6 (Repository-Scoped SQLite Store with Postgres Extensibility)**: 레포지토리 단위 격리 원칙에 따라 프로젝트마다 `.protokflow/protokflow.db` SQLite 데이터베이스를 두고 SQLModel/SQLAlchemy로 디자인 시스템, `DESIGN.md` 마크다운 본문, 정규화된 토큰, 프로토타입 런/패치 이력을 영속화한다. 불필요한 다중 테넌시 복잡도를 배제하고, 향후 Postgres 확장 경로는 표준 SQL 호환성 및 타입 규율을 통해 보장한다. `Governs R17, R19, R20`
+- **KD6 (Repository-Scoped SQLite Store with Postgres Extensibility)**: 레포지토리 단위 격리 원칙에 따라 프로젝트마다 `.protokflow/protokflow.db` SQLite 데이터베이스를 두고 SQLAlchemy 2.0으로 디자인 시스템, `DESIGN.md` 마크다운 본문, 정규화된 토큰, 프로토타입 런/패치 이력을 영속화한다. 불필요한 다중 테넌시 복잡도를 배제하고, 향후 Postgres 확장 경로는 표준 SQL 호환성 및 타입 규율을 통해 보장한다. `Governs R17, R19, R20`
 - **KD7 (DB-First Store with `DESIGN.md` File Projection)**: `DESIGN.md`의 내용은 DB를 정본으로 관리·편집되며, 파일 시스템의 파일은 Git 동기화를 위한 투영본으로 유지된다. `/admin` 저장은 파일로 즉시 write-through되고, 외부 변경(`git pull`, 브랜치 전환, 파일 직접 수정 등)은 **매 도구 호출 시 `(mtime, size)` 선검사**로 감지하여 자동 재인덱싱한다. Git 추적 대상인 `DESIGN.md`를 통해 데이터 손실 없는 복구 가능성을 보장한다. `Governs R16, R18, R20, R21`
 - **KD8 (Self-Contained Sibling Design Systems with Derived Experiments)**: `DESIGN.md` 표준 규약에 따라 디자인 시스템은 계층적 상속 없이 **형제 관계의 자기완결 문서**로 모델링한다. 실험용 파생 디자인 시스템은 출처(`derived_from_id`) 메타데이터만 유지하고 완전히 해석된 토큰 트리를 독립 보유하며, 기본적으로 DB 내에서 탐색되다가 필요 시 명시적으로 파일로 export된다. `Governs R5, R22, R23`
 
@@ -58,7 +58,7 @@ Protokflow는 Google Labs의 `DESIGN.md` 표준 포맷(YAML Front Matter + Markd
 - R2. 표준 UI 레이아웃 프리셋(`split-card`, `centered-modal`, `dashboard-shell`, `form-view` 등)을 내장하고 Jinja2 기반으로 1ms 이내 무오류(Zero-syntax-error) HTML을 렌더링해야 한다.
 - R3. 모든 코어 엔진 로직은 네트워크나 I/O 전송 계층 의존성 없이 순수 Python 함수 및 Pydantic 모델로 동작해야 한다.
 - R16. `DESIGN.md` 파일(YAML Front Matter + Markdown)을 파싱하고 정규화된 토큰 트리로 변환하거나 역으로 내보내는 양방향 직렬화기를 구현해야 한다. 왕복은 **무손실**이어야 한다 — 스펙이 정의한 `omitted`와 허용된 커스텀 확장 키(`unknown-key` 린트가 침묵하는 키)를 원문 그대로 보존해야 하며, 방출된 파일은 공식 린터(`npx @google/design.md lint`)를 통과해야 한다.
-- R17. 레포당 하나의 SQLite DB를 사용하는 SQLModel/SQLAlchemy 기반 저장소를 구축하여 8개 테이블(`schema_meta`, `design_systems`, `design_tokens`, `prototype_runs`, `candidates`, `token_patches`, `slot_contents`, `exports`)로 상태를 영속화해야 한다. 상세 사양은 [데이터베이스 스키마 설계](../concepts/database-schema.md)를 단일 소스로 한다.
+- R17. 레포당 하나의 SQLite DB를 사용하는 SQLAlchemy 기반 저장소를 구축하여 8개 테이블(`schema_meta`, `design_systems`, `design_tokens`, `prototype_runs`, `candidates`, `token_patches`, `slot_contents`, `exports`)로 상태를 영속화해야 한다. 상세 사양은 [데이터베이스 스키마 설계](../concepts/database-schema.md)를 단일 소스로 한다.
 - R18. `/admin` 웹 라우트를 통해 브라우저에서 디자인 시스템 목록 조회, 신규 생성, `DESIGN.md` 마크다운 및 토큰을 시각적으로 편집할 수 있는 관리 UI를 제공해야 한다. 저장은 DB 반영과 동시에 대응 파일로 write-through되어야 하며, 파생 디자인 시스템의 원본 대비 diff를 표시해야 한다.
 - R19. 런 데이터의 보존 정책을 제공해야 한다. 기본값으로 디자인 시스템당 최근 50개 런을 유지하고 초과분은 `archived` 처리 후 `protokflow prune`으로 삭제하며, 디자인 시스템과 토큰은 자동 삭제 대상이 아니다.
 - R20. 부팅 시 `schema_meta.schema_version`을 검사해 코드가 기대하는 버전과 비교하고, 불일치 시 명확한 오류와 복구 안내를 제공해야 한다. DB 삭제 후 `DESIGN.md`로부터의 재인덱싱이 항상 유효한 복구 경로여야 한다.
@@ -180,7 +180,7 @@ Protokflow는 Google Labs의 `DESIGN.md` 표준 포맷(YAML Front Matter + Markd
 #### In-Scope
 - 순수 Python 기반 전송 독립형 3계층 토큰 해석 엔진 (`protokflow.core`).
 - Google Labs `DESIGN.md` 파서/익스포터 및 YAML Front Matter ↔ 정규화 토큰 변환기.
-- 레포지토리 단위 격리 SQLite DB 기반 디자인 시스템/토큰/런 이력 저장소 (`SQLModel` 기반, 8개 테이블).
+- 레포지토리 단위 격리 SQLite DB 기반 디자인 시스템/토큰/런 이력 저장소 (`SQLAlchemy` 기반, 8개 테이블).
 - DB 우선 저장 + `DESIGN.md` 파일 투영(write-through) 및 매 호출 파일 상태 선검사·재인덱싱.
 - 파생 디자인 시스템 생성과 `promote_tokens`의 fork/capture/merge 시맨틱.
 - 무손실 Front Matter 라운드트립 및 공식 린터(`@google/design.md`) 적합성 검증.

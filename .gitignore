@@ -78,3 +78,6 @@ upload/
 
 # legacy design harness
 design_harness*/
+
+# Compound Engineering prototypes
+.context/compound-engineering/

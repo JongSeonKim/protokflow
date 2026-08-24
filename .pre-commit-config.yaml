@@ -71,6 +71,4 @@ repos:
         entry: uv run mypy backend tests --show-error-codes
         language: system
         pass_filenames: false
-        # pass_filenames is false, so this only decides whether the hook runs at all.
-        # pyproject.toml is included because [tool.mypy] and dependency pins change results.
         files: ^(backend|tests)/.*\.py$|^pyproject\.toml$

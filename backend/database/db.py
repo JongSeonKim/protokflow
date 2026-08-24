@@ -169,7 +169,8 @@ async def drop_tables() -> None:
         await conn.run_sync(MappedBase.metadata.drop_all)
 
 
-SQLALCHEMY_DATABASE_URL = create_database_url()
+_TEST_RUN = os.environ.get("PROTOKFLOW_TEST") == "1"
+SQLALCHEMY_DATABASE_URL = create_database_url(unittest=_TEST_RUN)
 async_engine = create_database_async_engine(SQLALCHEMY_DATABASE_URL)
 
 

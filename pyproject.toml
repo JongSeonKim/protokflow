@@ -48,3 +48,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--strict-markers -m 'not tooling' -n 4 --dist=loadscope"
+markers = [
+  "meta: Fast policy and structure guards kept in the default test run",
+  "tooling: Opt-in repository tooling tests (deselected by default)",
+]

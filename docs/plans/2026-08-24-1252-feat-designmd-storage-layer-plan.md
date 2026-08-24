@@ -105,6 +105,7 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 - 런 보존 정책 및 `protokflow prune` (R19)
 - 토큰 캐스케이드 해석과 Jinja2 렌더링 (R1, R2)
 - MCP·ASGI 어댑터, 프리뷰, 핫리로드, 코드 추출 (R4~R15)
+- 본문 fenced YAML 블록의 토큰 소스 지원 — 공식 파서의 비규범적 확장으로 인덱싱 시점 거부(KTD10) 정책을 적용하며, 지원 필요 시 저장 모델 재설계와 함께 후속 플랜으로 분리.
 
 #### Deferred to Follow-Up Work
 - `backend/core/conf.py`의 `DATABASE_HOST`/`PORT`/`USER`/`PASSWORD`/`SCHEMA`는 필수 설정이지만 `backend/database/db.py`가 무시한다. 레포 격리 SQLite에는 무의미하며 `.env` 존재를 강제해 `uvx protokflow` 즉시 실행(SC4)을 위협한다. 어댑터 플랜에서 정리한다.
@@ -144,6 +145,8 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 - KTD8. **파서는 전송·저장 계층에 의존하지 않는 순수 모듈이다.** `backend/app/protokflow/core/`에 두고 SQLAlchemy·FastAPI를 import 하지 않는다. 서버 플랜 KD1의 헤드리스 코어 원칙을 저장소 슬라이스에서 미리 지킨다. `Governs R16`
 
 - KTD9. **write-through는 파일을 먼저 쓰고 DB 트랜잭션을 나중에 커밋한다.** DB와 파일은 하나의 트랜잭션으로 묶을 수 없으므로 실패 지점에 따라 두 가지 결과만 남게 설계한다. 파일 쓰기가 실패하면 DB 트랜잭션이 롤백되어 아무것도 바뀌지 않는다. 파일 쓰기 성공 후 DB 커밋이 실패하면 파일이 DB보다 앞서지만, 다음 진입점의 선검사(R21)가 digest 불일치를 감지해 파일로부터 재인덱싱한다. 파일이 복구 원본이라는 저장소 위상 불변식이 이 방향을 강제한다 — 반대 순서는 DB가 앞서고 파일이 뒤처지는 상태를 만들며, 선검사가 이를 되돌릴 방법이 없다. `Governs R16, R17`
+
+- KTD10. **Front Matter 부재 문서는 수용하고, 본문의 fenced YAML 블록은 인덱싱 시점에 거부한다.** 정본 스펙이 Front Matter를 optional로 규정하고("An optional YAML frontmatter") 공식 린터 0.4.0 역시 Front Matter 부재 문서를 경고 1건(`NO_YAML_FOUND`)으로 통과시키므로, Front Matter 부재는 유효한 문서 형태다. 인덱싱 시 `title`은 slug로 폴백하여 `design_systems.title`의 NOT NULL 제약을 충족하고, `front_matter_raw`는 빈 문자열(`''`), 토큰은 0건으로 저장한다. 반면 본문의 fenced YAML 블록(```yaml / ```yml)은 공식 파서의 비규범적 확장으로, 이를 수용하려면 소스 위치 추적, 본문 패치, 중복 섹션 병합 등 저장 모델 전반의 재설계가 요구되어 KTD1의 단일 직렬화 경로가 훼손된다. 따라서 KTD3의 YAML 앵커 거부와 동일하게 인덱싱 시점 명시적 오류로 거부하고 Front Matter 통합을 안내한다. `Governs R16, R17`
 
 ### High-Level Technical Design
 
@@ -230,6 +233,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - 프로토타입 결정 캡슐: `.context/compound-engineering/ce-prototype/2026-08-24-designmd-roundtrip/decisions.md` — 라운드트립 전략 비교 결과, 21개 클레임 검증 기록, 반려된 대안.
 - 검증된 파서/직렬화기 스파이크: 같은 디렉토리의 `01-designmd-lossless-roundtrip/designmd.py`, 드라이버 `verify_roundtrip.py`·`verify_text_column.py`, 픽스처 4종.
 - 정본 스펙: `@google/design.md` 0.4.0 패키지 동봉 `dist/spec.md`(377줄), `dist/spec-config.yaml`(167줄).
+- Front Matter 선택성 검증 사양: vendored `spec.md`의 "An optional YAML frontmatter" 규정, 공식 `lint` 검증(Front Matter 부재 시 경고 1건 `NO_YAML_FOUND` 및 exit 0, fenced YAML만 존재 시 토큰 병합 및 exit 0), 프로토타입 파서 검증(Front Matter 부재 시 예외 없이 `front_matter_raw = ''`, 토큰 0건, `title = None`).
 - 기존 저장소 모델: `backend/app/protokflow/model/` 8개 파일, 커스텀 타입 `types.py`.
 - 부트 경로 및 세션 팩토리 프록시: `backend/database/db.py` — `_set_factory_for_testing` 훅이 테스트 격리의 기반이다.
 - 스캐폴드 규약: `backend/core/registrar.py`(수명주기 미배선), `backend/common/model.py`(`Base` 감사 컬럼), `backend/cli.py`(cappa 스텁).
@@ -281,9 +285,9 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 **Files**:
 - `backend/app/protokflow/core/__init__.py`
 - `backend/app/protokflow/core/designmd.py`
-- `backend/app/protokflow/core/errors.py` — 앵커 거부 예외
+- `backend/app/protokflow/core/errors.py` — 앵커·fenced YAML 블록 거부 예외
 - `tests/app/protokflow/core/test_designmd.py`
-- `tests/fixtures/design_md/` — 픽스처 4종
+- `tests/fixtures/design_md/` — 픽스처 6종(무손실 왕복 4종, Front Matter 부재 1종, 거부 검증 1종)
 
 **Approach**:
 1. 검증된 파서 로직(`01-designmd-lossless-roundtrip/designmd.py`)을 이식한다. KTD1 단일 직렬화 정책에 따라 in-place 패치 경로만 구현한다.
@@ -291,7 +295,8 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 3. 토큰 평탄화: `colors`/`typography`/`rounded`/`spacing`을 `foundation` tier로, `components`를 `component` tier로 매핑한다. `token_path`는 점 표기이며 깊이는 2 또는 3이다.
 4. 모델링된 스칼라(`version` → `spec_version`, `name` → `title`, `description`)를 분리하고, 나머지 최상위 키(`omitted`, 미지 키)를 `front_matter_extras`로 모은다.
 5. 앵커 감지는 노드의 `yaml_anchor`를 순회해 하나라도 발견되면 예외를 던진다. 앵커 지점과 별칭 지점을 구분할 필요는 없다 — 거부 게이트는 "이 문서가 앵커를 쓰는가"만 알면 된다.
-6. 패치 직렬화는 보존된 원문을 로드해 대상 `token_path`만 치환하고 재출력한다.
+6. fenced YAML 블록 감지는 본문을 라인 스캔해 ```yaml 또는 ```yml로 시작하는 코드 펜스를 탐지한다. 발견 시 예외를 발생시키며, 감지는 Front Matter 유무와 독립적으로 수행한다.
+7. 패치 직렬화는 보존된 원문을 로드해 대상 `token_path`만 치환하고 재출력한다.
 
 **Patterns to follow**: 모델의 tier CHECK 제약(`backend/app/protokflow/model/design_token.py`)이 평탄화 결과의 유효 범위를 정의한다.
 
@@ -299,6 +304,8 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 **Test scenarios**:
 - Front Matter가 없는 파일을 파싱하면 본문 전체가 `guide_markdown`이 되고 토큰이 0개다.
+- 본문에 fenced YAML 블록이 있으면 명시적 오류로 거부되고, 예외 메시지가 토큰을 Front Matter로 통합하라고 안내한다.
+- Front Matter가 정상 존재해도 본문의 fenced YAML 블록은 동일한 오류로 거부된다 (감지는 Front Matter 유무와 독립).
 - 닫히지 않은 Front Matter 펜스는 파싱 오류를 낸다.
 - 평탄화된 모든 토큰의 tier가 `foundation` 또는 `component`다.
 - `typography.body-md.fontSize` 같은 깊이 3 경로가 정확히 추출된다.
@@ -310,7 +317,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - 별칭(`*ink`)만 있고 앵커 정의가 다른 그룹에 있는 경우에도 거부된다.
 - 접힌 스칼라(`>-`)와 인용 스타일 혼용이 왕복에서 보존된다.
 
-**Verification**: 4종 픽스처 전부가 바이트 동일 왕복을 통과하고, 앵커 픽스처가 거부된다.
+**Verification**: 6종 픽스처가 각각 검증 기준을 통과한다 — 무손실 왕복 픽스처 4종은 바이트 동일 왕복, Front Matter 부재 픽스처는 토큰 0건 및 `front_matter_raw = ''` 수용, 앵커 및 fenced YAML 픽스처는 파싱 거부.
 
 ---
 
@@ -370,7 +377,8 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 2. 하위 디렉토리에서 발견된 `DESIGN.md`는 탐색 범위 밖이므로 무시한다. R23이 형제 취급을 규정하지만, 탐색 경로가 두 곳으로 한정되므로 하위 디렉토리 파일은 애초에 인덱싱 대상이 아니다.
 3. 인덱싱은 단일 트랜잭션이다 — 디자인 시스템 upsert와 토큰 전량 동기화가 함께 커밋되거나 함께 롤백된다.
 4. 인덱싱 시 `source_path`, `source_digest`, `source_mtime_ns`, `source_size`, `synced_at`을 채운다.
-5. 앵커 거부 예외는 트랜잭션 시작 전에 발생해야 한다. 파싱을 먼저 완료한 뒤 DB에 쓴다.
+5. Front Matter가 없는 파일도 인덱싱한다. `title`은 slug로 폴백해 `design_systems.title`의 NOT NULL을 충족하고, `front_matter_raw`는 `''`, 토큰은 0건으로 저장한다. 스펙이 Front Matter를 optional로 규정하므로 거부하지 않는다.
+6. 앵커 및 fenced YAML 거부 예외는 트랜잭션 시작 전에 발생해야 한다. 파싱을 먼저 완료한 뒤 DB에 쓴다.
 
 **Test scenarios**:
 - 루트 `DESIGN.md`가 slug `default`로 인덱싱된다.
@@ -378,6 +386,8 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - 하위 디렉토리(`src/DESIGN.md`)는 탐색되지 않는다.
 - `design/` 디렉토리가 없어도 탐색이 실패하지 않는다.
 - 파일이 하나도 없으면 빈 결과를 반환하고 예외를 던지지 않는다.
+- Front Matter가 없는 파일이 slug 폴백 `title`로 인덱싱되고 토큰 0개·`front_matter_raw = ''`로 저장된다.
+- 본문에 fenced YAML 블록이 있는 파일은 인덱싱이 거부되고 DB에 부분 상태가 남지 않는다.
 - 인덱싱 후 `source_digest`가 파일의 실제 sha256과 일치한다.
 - 앵커를 포함한 파일 인덱싱이 거부되고 DB에 부분 상태가 남지 않는다.
 - 같은 파일을 두 번 인덱싱해도 토큰이 중복되지 않는다.
@@ -553,6 +563,4 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 ## Deferred / Open Questions
 
-- **Front Matter 부재 파일에 대한 인덱싱 정책 확립** (`U4`)
-
-  Front Matter가 없는 마크다운 문서는 파싱 시 `title`을 추출할 수 없어, DB 테이블의 NOT NULL 제약과 충돌할 수 있다. 인덱싱 시점에 오류로 거부할지, 파일 slug 기반 기본 title을 자동 부여할지에 대한 정책 정의가 필요하다.
+None.

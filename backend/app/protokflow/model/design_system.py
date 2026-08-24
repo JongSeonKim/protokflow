@@ -67,8 +67,8 @@ class DesignSystem(Base):
     source_digest: Mapped[str | None] = mapped_column(
         sa.String(256), default=None, comment="sha256 digest at last sync"
     )
-    source_mtime: Mapped[float | None] = mapped_column(
-        sa.Float, default=None, comment="Source file modification time"
+    source_mtime_ns: Mapped[int | None] = mapped_column(
+        sa.BigInteger, default=None, comment="Source file mtime in nanoseconds"
     )
     source_size: Mapped[int | None] = mapped_column(
         sa.Integer, default=None, comment="Source file size in bytes"

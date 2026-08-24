@@ -20,7 +20,7 @@
 
 ## 1. 설계 목표
 
-1. **에이전트 1회 호출 = DB 1회 트랜잭션.** 도구 호출 하나가 여러 테이블에 걸친 다단계 의례(제안 → 승인 → 승격)를 요구하지 않는다. (SC1)
+1. **에이전트 단일 호출 기반 단일 트랜잭션 처리.** 도구 호출 하나가 여러 테이블에 걸친 다단계 승인 절차(제안 → 승인 → 승격)를 요구하지 않는다. (SC1)
 2. **재현 가능성은 스냅샷으로 확보한다.** 해시 체인·리비전 그래프 없이, 런 생성 시점의 토큰 상태를 그대로 영속화한다.
 3. **파생 가능한 것은 저장하지 않는다.** 렌더링이 1ms 이내(R2)이므로 HTML은 캐시 대상이 아니다.
 4. **SQLite 단일 파일에서 무설정으로 동작한다.** Postgres 이관 경로는 열어두되, 표준 SQL 호환성과 타입 안전성을 보장하는 선에서 설계한다(§8). (KD6)
@@ -97,7 +97,7 @@ DB = f(DESIGN.md) + 소멸 가능한 런 이력
                    └──────────────────────┘   └─────────────────────┘  └────────────┘
 ```
 
-`design_systems.derived_from_id`는 같은 테이블을 가리키는 자기참조(출처 추적용)이다.
+`design_systems.derived_from_id`는 동일 테이블을 가리키는 자기참조(출처 추적용) 외래키다.
 
 ---
 
@@ -110,7 +110,7 @@ DDL은 SQLite 기준의 논리 스키마이며, 실제 정의는 SQLAlchemy 2.0 
 - **타임스탬프**: 감사 컬럼(`created_time`/`updated_time`/`deleted_time`)은 공통 `Base`의 `TimeZone` 타입(`DateTime(timezone=True)`, `DATETIME_TIMEZONE` 기준 aware)으로 매핑한다. 도메인 타임스탬프(`design_systems.synced_at`)는 `Timestamp`(naive 거부, UTC 정규화)를 사용한다(§8). SQLite는 ISO-8601 TEXT, Postgres는 `timestamptz`로 저장된다.
 - **JSON 컬럼**: `sa.JSON`(SQLite TEXT ↔ Postgres `jsonb`). 인덱싱 대상이 아닌 소규모 구조에만 사용한다.
 - **삭제**: 소유 관계는 모두 `ON DELETE CASCADE`. SQLite 커넥션마다 `PRAGMA foreign_keys=ON`을 적용한다. `deleted` 플래그는 런 프루닝·아카이빙 등 소프트 삭제 표식용이며, FK 참조 무결성은 여전히 물리 CASCADE로 처리된다.
-- **제약 이름**: 모든 CHECK/UNIQUE/FK/Index에 명시적 이름을 부여한다. SQLAlchemy `MetaData(naming_convention=...)` 규칙(`ck_`, `uq_`, `fk_`, `ix_` 접두사)을 강제하여 마이그레이션 도구(Alembic) 도입 시 가짜 변경 감지를 방지한다.
+- **제약 이름**: 모든 CHECK/UNIQUE/FK/Index에 명시적 이름을 부여한다. SQLAlchemy `MetaData(naming_convention=...)` 규칙(`ck_`, `uq_`, `fk_`, `ix_` 접두사)을 강제하여 마이그레이션 도구(Alembic) 도입 시 불필요한 변경 감지(허위 감지)를 방지한다.
 - **AUTOINCREMENT**: 정수 키를 쓰는 테이블에는 `sqlite_autoincrement=True`를 명시하여 삭제된 rowid 재사용으로 인한 순서 왜곡을 차단한다.
 
 ### 5.1 스키마 버전 (`PRAGMA user_version`)
@@ -126,7 +126,7 @@ PRAGMA user_version = 1;
   - `0`(신규 파일) → 기대 버전(`EXPECTED_SCHEMA_VERSION`)으로 스탬프한다.
   - 기대 버전과 일치 → 통과.
   - 불일치 → `SchemaVersionMismatch`를 발생시키고, **DB 삭제 후 `DESIGN.md` 재인덱싱**을 복구 경로로 안내한다(§9). 데이터를 보존하며 마이그레이션하지 않는다.
-- Postgres는 현재 범위 밖(YAGNI)이므로 방언 중립성보다 무테이블 경량성을 택한다. 실제 Postgres 이관 또는 파괴적 스키마 변경이 필요한 시점에 Alembic을 도입하며, 그때 Alembic의 `alembic_version`이 이 역할을 흡수한다(§8, §9).
+- Postgres 지원은 현재 요구사항 범위 외이므로 방언 중립성보다 테이블이 필요 없는 경량 설계를 채택한다. 실제 Postgres 이관 또는 파괴적 스키마 변경이 필요한 시점에 Alembic을 도입하며, 그때 Alembic의 `alembic_version`이 이 역할을 흡수한다(§8, §9).
 
 ### 5.2 `design_systems`
 
@@ -143,7 +143,7 @@ CREATE TABLE design_systems (
   guide_markdown  TEXT      NOT NULL DEFAULT '',  -- DESIGN.md 본문(Front Matter 제외)
   source_path     TEXT,                           -- 대응하는 DESIGN.md 파일 경로
   source_digest   TEXT,                           -- 마지막 동기화 시점 파일의 sha256
-  source_mtime    REAL,                           -- mtime (선검사용)
+  source_mtime_ns INTEGER,                        -- mtime 나노초 정수 (선검사용)
   source_size     INTEGER,                        -- 크기  (선검사용)
   synced_at       TIMESTAMP
 );
@@ -156,7 +156,7 @@ CREATE TABLE design_systems (
 - `guide_markdown`은 `design://systems/{slug}` 리소스로 반환되어 에이전트의 프롬프트 컨텍스트가 된다.
 - `source_path`가 NULL인 디자인 시스템은 **DB 전용**(파일 미연동)이다. 파생 디자인 시스템은 기본적으로 DB 전용으로 생성되어 Git 트리를 오염시키지 않으며, 필요 시 명시적 export를 통해 `design/{slug}.md` 파일로 변환된다.
 - `derived_from_id`는 **출처(provenance) 추적용 메타데이터**이다. 파생 시스템도 완전 해석된 자기완결 토큰 트리를 가지며, `promote_tokens`의 원본 병합 대상 식별 및 `/admin` UI의 diff 표시에 사용된다.
-- `source_mtime`/`source_size`는 도구 호출 시 파일 변경 여부를 저비용(`stat`)으로 선검사하여 해시 계산 오버헤드를 회피하는 용도이다(§6).
+- `source_mtime_ns`/`source_size`는 도구 호출 시 파일 변경 여부를 저비용(`stat`)으로 선검사하여 해시 계산 오버헤드를 회피하는 용도이다(§6). mtime은 부동소수점 초가 아닌 나노초 정수(`st_mtime_ns`)로 저장한다 — 검증 결과 APFS는 1ns 단위까지 정확히 저장하며 SQLite `INTEGER`는 무손실 왕복하지만, 초 단위 `REAL`(float64)은 현재 epoch에서 최소 가시 간격(ULP)이 약 238ns여서 그보다 작은 시간 간격의 변경을 식별하지 못한다.
 
 #### 디자인 시스템 형제 모델 및 독립 완결성 규약
 
@@ -324,7 +324,11 @@ CREATE TABLE exports (
 
 `DESIGN.md`는 도구 호출 외에도 `git pull`, 브랜치 전환, fresh clone, 파일 직접 수정 등 다양한 경로로 변경될 수 있다.
 
-따라서 매 도구 호출 시 **대응 파일의 `(mtime, size)`를 선검사**하고, 불일치 시에만 sha256을 계산해 `source_digest`와 비교한 후 재인덱싱을 수행한다. `stat` 기반 선검사는 마이크로초 단위로 완료되므로 오버헤드가 없으며, 파일 워처 데몬 없이도 일관성을 유지한다.
+따라서 매 도구 호출 시 **대응 파일의 `(mtime_ns, size)`를 선검사**하고, 불일치 시에만 sha256을 계산해 `source_digest`와 비교한 후 재인덱싱을 수행한다. `stat` 기반 선검사는 마이크로초 단위로 완료되므로 오버헤드가 없으며, 파일 워처 데몬 없이도 일관성을 유지한다.
+
+mtime은 부동소수점 초가 아닌 **나노초 정수**(`os.stat().st_mtime_ns`)로 저장한다. 검증 결과 APFS는 1ns 단위까지 정확히 저장·왕복하며 SQLite `INTEGER`는 무손실 정확도를 제공한다. 반면 초 단위 `REAL`(float64)은 현재 epoch에서 최소 가시 간격(ULP)이 약 238ns이므로 그보다 작은 시간 간격의 변경을 식별하지 못해 감지 정확도를 저하시킨다.
+
+**감지 경계**: mtime을 보존한 채 내용만 바꾸는 복사·편집(`cp -p`, `rsync -a`, `touch -r` 조합)은 `(mtime_ns, size)`가 그대로 유지되어 stat 선검사로 감지할 수 없다. 이 경계의 표준 탈출구는 강제 재인덱싱이다 — 인덱싱 CLI(`protokflow index`)는 선검사를 우회하고 파일을 항상 전량 다시 읽는다.
 
 진행 중인 프리뷰는 실행 시점의 `prototype_runs.token_snapshot`을 참조하므로 재인덱싱의 영향을 받지 않는다.
 
@@ -356,7 +360,7 @@ DESIGN.md 표준 스펙은 참조 문법으로 `{path.to.token}` 문자열 포�
 | R18 (관리 UI) | `design_systems`, `design_tokens.origin` |
 | R19 (런 보존 정책) | `prototype_runs.status`, `prototype_runs.created_time` |
 | R20 (스키마 버전 검사) | `PRAGMA user_version` |
-| R21 (파일 선검사 및 재인덱싱) | `design_systems.source_mtime`, `design_systems.source_size`, `design_systems.source_digest` |
+| R21 (파일 선검사 및 재인덱싱) | `design_systems.source_mtime_ns`, `design_systems.source_size`, `design_systems.source_digest` |
 | R22 (파생 디자인 시스템) | `design_systems.derived_from_id`, `design_systems.source_path` |
 
 ---

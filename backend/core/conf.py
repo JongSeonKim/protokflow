@@ -44,21 +44,8 @@ class Settings(BaseSettings):
     FASTAPI_STATIC_FILES: bool = True
 
     # .env Database
-    DATABASE_TYPE: Literal["sqlite", "postgresql"] = "sqlite"
-    DATABASE_HOST: str
-    DATABASE_PORT: int
-    DATABASE_USER: str
-    DATABASE_PASSWORD: str
-    DATABASE_SCHEMA: str
-
-    # Database
-    DATABASE_ECHO: bool | Literal["debug"] = False
-    DATABASE_POOL_ECHO: bool | Literal["debug"] = False
-    DATABASE_POOL_SIZE: int = 10
-    DATABASE_MAX_OVERFLOW: int = 20
-    DATABASE_POOL_TIMEOUT: int = 30
-    DATABASE_POOL_RECYCLE: int = 3600
-    DATABASE_CHARSET: str = "utf8mb4"
+    DATABASE_TYPE: Literal["sqlite"] = "sqlite"
+    DATABASE_SQLITE_BUSY_TIMEOUT_MS: int = 5_000
 
     # CORS
     CORS_ALLOWED_ORIGINS: list[str] = [  # No trailing slash

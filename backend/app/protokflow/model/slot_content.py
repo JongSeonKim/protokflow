@@ -1,4 +1,4 @@
-"""Slot custom content table (schema doc §5.7)."""
+"""Slot custom content model."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from backend.common.model import Base
 
 
 class SlotContent(Base):
-    """Upserted custom slot text for update_slot_custom."""
+    """Custom slot content override for a candidate."""
 
     __tablename__ = "slot_contents"
     __table_args__ = (
@@ -22,17 +22,17 @@ class SlotContent(Base):
             ["candidates.run_id", "candidates.candidate_key"],
             ondelete="CASCADE",
         ),
-        {"comment": "Per-candidate custom slot contents"},
+        {"comment": "Custom slot contents"},
     )
 
-    run_id: Mapped[str] = mapped_column(Ulid(), comment="Parent run")
+    run_id: Mapped[str] = mapped_column(Ulid(), comment="Parent run ID")
     candidate_key: Mapped[str] = mapped_column(
         sa.String(64), comment="Target candidate key"
     )
     slot_key: Mapped[str] = mapped_column(
-        sa.String(256), comment="e.g. headline, cta-label"
+        sa.String(256), comment="Slot key (e.g. headline, cta-label)"
     )
-    content: Mapped[str] = mapped_column(sa.Text, comment="Slot body")
+    content: Mapped[str] = mapped_column(sa.Text, comment="Slot body content")
     content_kind: Mapped[str] = mapped_column(
         sa.String(64), default="text", comment="text | html | markdown"
     )

@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+pytest_plugins = ("tests.support.db",)
 
 # Capture the repository's production location before the test home is forced.
 # This is exposed for the isolation meta-suite without importing the backend.

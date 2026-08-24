@@ -22,9 +22,13 @@ def _table_names(connection: Any) -> list[str]:
 @pytest.mark.asyncio
 async def test_active_engine_defaults_to_production_singleton() -> None:
     """Without an override, lifecycle callers use the import-time singleton."""
-    db._set_engine_for_testing(None)
+    previous_engine = db._active_engine
 
-    assert db._get_active_engine() is db.async_engine
+    try:
+        db._set_engine_for_testing(None)
+        assert db._get_active_engine() is db.async_engine
+    finally:
+        db._set_engine_for_testing(previous_engine)
 
 
 @pytest.mark.asyncio
@@ -81,6 +85,7 @@ async def test_drop_tables_uses_injected_engine(tmp_path: Path) -> None:
 async def test_engine_hook_can_be_cleared(tmp_path: Path) -> None:
     """Clearing the testing hook restores the production singleton."""
     engine = db.create_database_async_engine(_database_url(tmp_path / "isolated.db"))
+    previous_engine = db._active_engine
     try:
         db._set_engine_for_testing(engine)
         assert db._get_active_engine() is engine
@@ -88,5 +93,5 @@ async def test_engine_hook_can_be_cleared(tmp_path: Path) -> None:
         db._set_engine_for_testing(None)
         assert db._get_active_engine() is db.async_engine
     finally:
-        db._set_engine_for_testing(None)
+        db._set_engine_for_testing(previous_engine)
         await engine.dispose()

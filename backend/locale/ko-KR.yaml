@@ -1,0 +1,3 @@
+response:
+  error: "요청 오류"
+  success: "요청 성공"

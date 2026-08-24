@@ -1,0 +1,6 @@
+{
+  "response": {
+    "error": "Request error",
+    "success": "Request success"
+  }
+}

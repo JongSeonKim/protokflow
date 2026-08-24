@@ -53,6 +53,11 @@ class DesignSystem(Base):
         default_factory=dict,
         comment="Unmodeled front matter keys preserved verbatim",
     )
+    front_matter_raw: Mapped[str] = mapped_column(
+        sa.Text,
+        default="",
+        comment="Verbatim front matter: comments, blank lines, quote style, key order",
+    )
     guide_markdown: Mapped[str] = mapped_column(
         sa.Text, default="", comment="DESIGN.md body without front matter"
     )

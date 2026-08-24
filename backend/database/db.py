@@ -157,7 +157,7 @@ async def create_tables() -> None:
     create_all + schema_version check. On mismatch this raises before any
     tool call touches the DB, with deletion + re-indexing as recovery.
     """
-    async with async_engine.begin() as conn:
+    async with _get_active_engine().begin() as conn:
         await conn.run_sync(MappedBase.metadata.create_all)
     async with async_db_session() as session:
         await ensure_schema_version(session)
@@ -165,7 +165,7 @@ async def create_tables() -> None:
 
 async def drop_tables() -> None:
     """Drop database tables"""
-    async with async_engine.begin() as conn:
+    async with _get_active_engine().begin() as conn:
         await conn.run_sync(MappedBase.metadata.drop_all)
 
 
@@ -174,7 +174,24 @@ SQLALCHEMY_DATABASE_URL = create_database_url(unittest=_TEST_RUN)
 async_engine = create_database_async_engine(SQLALCHEMY_DATABASE_URL)
 
 
+_active_engine: AsyncEngine | None = None
 _active_factory: async_sessionmaker[AsyncSession | Any] | None = None
+
+
+def _get_active_engine() -> AsyncEngine:
+    """Return the lifecycle engine, falling back to the production singleton."""
+    return _active_engine if _active_engine is not None else async_engine
+
+
+def _set_engine_for_testing(engine: AsyncEngine | None) -> None:
+    """Test-only hook for swapping the lifecycle engine.
+
+    Production code must never call this. Test fixtures may set an isolated
+    engine for their session scope and pass ``None`` during teardown to restore
+    the import-time production singleton.
+    """
+    global _active_engine
+    _active_engine = engine
 
 
 class _SessionFactoryProxy:

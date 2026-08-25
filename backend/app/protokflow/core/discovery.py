@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from backend.app.protokflow.core.errors import DuplicateSlugError
+from backend.app.protokflow.error.design_md import DuplicateSlugError
 
 
 @dataclass(frozen=True, slots=True)

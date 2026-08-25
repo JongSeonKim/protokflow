@@ -1,1 +1,1 @@
-"""Domain exceptions, one module per slice (storage, and later reconcile)."""
+"""Domain exceptions, one module per slice (design_md, storage, later reconcile)."""

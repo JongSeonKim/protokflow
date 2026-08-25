@@ -12,7 +12,7 @@ from backend.app.protokflow.core.design_md import (
     parse_design_md,
     serialize_design_md,
 )
-from backend.app.protokflow.core.errors import (
+from backend.app.protokflow.error.design_md import (
     DottedTokenNameError,
     FencedYamlBlockError,
     InvalidFrontMatterError,

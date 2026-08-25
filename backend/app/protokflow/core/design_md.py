@@ -20,7 +20,7 @@ from ruamel.yaml.error import YAMLError
 from ruamel.yaml.events import AliasEvent
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScalarString
 
-from backend.app.protokflow.core.errors import (
+from backend.app.protokflow.error.design_md import (
     DottedTokenNameError,
     FencedYamlBlockError,
     InvalidFrontMatterError,

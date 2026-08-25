@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.core.design_md import parse_design_md
-from backend.app.protokflow.core.errors import (
+from backend.app.protokflow.error.design_md import (
     FencedYamlBlockError,
     InvalidEncodingError,
     YamlAnchorError,

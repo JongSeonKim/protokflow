@@ -102,3 +102,11 @@ class TokenReparentingError(StorageLayerError):
 
 class ConcurrentModificationError(StorageLayerError):
     """Raised when a design system's source file was modified concurrently or externally."""
+
+
+class UnsupportedSourceLinkError(StorageLayerError):
+    """Raised when a DESIGN.md source is a symlink or hard link.
+
+    Atomic file replacement via rename modifies directory entries directly,
+    which would replace symlinks with regular files or break hard links.
+    """

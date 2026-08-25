@@ -28,6 +28,7 @@ from backend.app.protokflow.core.errors import (
     TokenReparentingError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
+    UnsupportedSourceLinkError,
 )
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
@@ -178,18 +179,21 @@ def _fsync_directory(directory: Path) -> None:
 def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
     """Write bytes to a file atomically via a same-directory temporary file.
 
-    A partial write must never corrupt a Git-tracked DESIGN.md file, so the
-    replacement is prepared beside the target and swapped in with rename. The
-    bytes are forced to disk before the swap and the directory entry after it,
-    because the storage topology treats the file as the recovery source of
-    truth: a crash that reverts a file the database already committed would
-    leave the database ahead with no way back.
+    The replacement is written beside the target and swapped in via rename
+    to ensure atomic updates. File data and parent directory entries are synced
+    to disk around the rename operation.
 
-    Returns the metadata of the written file, taken from the temporary file's
-    own descriptor rather than from the target path after the rename. The
-    rename preserves the inode, so this describes the bytes this call wrote
-    even when another writer replaces the path immediately afterwards.
+    Symlinks and hard links are rejected before writing to prevent breaking link
+    targets during directory entry replacement.
+
+    Returns the stat result from the temporary file descriptor before replacement,
+    capturing the exact metadata of the written bytes.
     """
+    if os.path.islink(path) or os.lstat(path).st_nlink > 1:
+        raise UnsupportedSourceLinkError(
+            f"DESIGN.md source is a symlink or hard link and cannot be "
+            f"atomically replaced: {path}"
+        )
     descriptor, temp_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )

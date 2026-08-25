@@ -19,6 +19,7 @@ from backend.app.protokflow.core.errors import (
     UnknownDesignSystemError,
     UnknownTokenPathError,
     UnbackedDesignSystemError,
+    UnsupportedSourceLinkError,
 )
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
@@ -837,3 +838,33 @@ def test_atomic_write_propagates_permission_error_on_unwritable_parent(
         design_dir.chmod(0o700)
 
     assert target.read_bytes() == b"original\n"
+
+
+def test_atomic_write_rejects_symlink_source(tmp_path: Path) -> None:
+    """Symlink sources are rejected to prevent replacing the link with a regular file."""
+    real_target = tmp_path / "real.md"
+    real_target.write_bytes(b"original\n")
+    link = tmp_path / "DESIGN.md"
+    link.symlink_to(real_target)
+
+    with pytest.raises(UnsupportedSourceLinkError):
+        service_module._atomic_write_bytes(link, b"new content\n")
+
+    assert link.is_symlink()
+    assert real_target.read_bytes() == b"original\n"
+    assert sorted(tmp_path.iterdir()) == sorted([real_target, link])
+
+
+def test_atomic_write_rejects_hard_linked_source(tmp_path: Path) -> None:
+    """Hard-linked sources are rejected to prevent breaking link aliases."""
+    target = tmp_path / "DESIGN.md"
+    target.write_bytes(b"original\n")
+    alias = tmp_path / "alias.md"
+    os.link(target, alias)
+
+    with pytest.raises(UnsupportedSourceLinkError):
+        service_module._atomic_write_bytes(target, b"new content\n")
+
+    assert target.read_bytes() == b"original\n"
+    assert alias.read_bytes() == b"original\n"
+    assert os.stat(target).st_ino == os.stat(alias).st_ino

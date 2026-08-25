@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from backend.app.protokflow.error.design_md import YamlAnchorError
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
+from backend.app.protokflow.model import DesignToken
 from backend.app.protokflow.error.storage import (
     SourceRootMismatchError,
     UnknownDesignSystemError,
@@ -248,6 +250,110 @@ async def test_query_raises_unknown_slug(tmp_path: Path, test_db: AsyncSession) 
 
     with pytest.raises(UnknownDesignSystemError, match="missing-slug"):
         await design_system_service.get(repo_root=tmp_path, slug="missing-slug")
+
+
+async def test_unknown_slug_does_not_allocate_a_lock(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """Rejecting an unknown slug must not grow the per-slug lock map."""
+    del test_db
+    await _index_default(tmp_path)
+
+    with pytest.raises(UnknownDesignSystemError, match="never-seen"):
+        await design_system_service.get(repo_root=tmp_path, slug="never-seen")
+    with pytest.raises(UnknownDesignSystemError, match="never-seen"):
+        await design_system_service.apply_token_patch(
+            repo_root=tmp_path,
+            slug="never-seen",
+            token_patches={"colors.primary": "#0"},
+        )
+
+    assert set(design_system_service._locks) == {"default"}
+
+
+async def test_query_returns_db_only_system_without_reconciliation(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """A DB-only system (source_path NULL) is returned as-is, never stale."""
+    del test_db
+    await _index_default(tmp_path)
+    async with db.async_db_session.begin() as session:
+        db_only = await design_system_dao.create(
+            session, DesignSystem(slug="derived", title="Derived")
+        )
+        session.add(DesignToken(db_only.id, "foundation", "colors.accent", "#777777"))
+
+    detail = await design_system_service.get(repo_root=tmp_path, slug="derived")
+
+    assert detail.stale is False
+    assert detail.system.slug == "derived"
+    assert [(token.token_path, token.value) for token in detail.tokens] == [
+        ("colors.accent", "#777777")
+    ]
+
+
+async def test_index_all_cannot_revert_a_completed_patch(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A patch landing while an index batch is paused must not be overwritten."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    upsert_entered = asyncio.Event()
+    release_index = asyncio.Event()
+    real_upsert = design_system_dao.upsert
+    gate_armed = True
+
+    async def upsert_gate(session: object, obj: DesignSystem, **kwargs: object):
+        nonlocal gate_armed
+        if gate_armed:
+            gate_armed = False
+            upsert_entered.set()
+            await release_index.wait()
+        return await real_upsert(session, obj, **kwargs)  # type: ignore[arg-type]
+
+    async def run_paused_index() -> object:
+        return await design_system_service.index_all(repo_root=tmp_path)
+
+    async def run_patch_after_index_enters() -> object:
+        await upsert_entered.wait()
+        patch_task = asyncio.create_task(
+            design_system_service.apply_token_patch(
+                repo_root=tmp_path,
+                slug="default",
+                token_patches={"colors.primary": "#0B0E14"},
+            )
+        )
+        # While the index batch is paused inside its transaction, the patch can
+        # only be waiting on the shared lock; once that is observed, let the
+        # batch finish so the patch runs against its committed result.
+        for _ in range(100):
+            if patch_task.done():
+                break
+            await asyncio.sleep(0.01)
+        assert not patch_task.done(), "patch completed while index held the lock"
+        release_index.set()
+        return await patch_task
+
+    monkeypatch.setattr(design_system_dao, "upsert", upsert_gate)
+    indexed, patched = await asyncio.gather(  # type: ignore[misc]
+        run_paused_index(), run_patch_after_index_enters()
+    )
+
+    # The patch ran after the paused index released the shared lock, so the
+    # index's pre-patch parse cannot overwrite the patched state.
+    assert indexed is not None and patched is not None
+    patched_text = design_md_path.read_text(encoding="utf-8")
+    assert "primary: '#0B0E14'" in patched_text
+    system = await _system_by_slug("default")
+    assert (
+        system.source_digest == hashlib.sha256(design_md_path.read_bytes()).hexdigest()
+    )
+    assert (await _token_rows(system.id))["colors.primary"] == "#0B0E14"
 
 
 async def test_rejected_reindex_keeps_previous_db_state(

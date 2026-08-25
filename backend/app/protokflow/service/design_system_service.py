@@ -130,7 +130,15 @@ def _atomic_write_bytes(
             f"atomically replaced: {path}"
         )
     if expected_digest is not None:
-        current, _ = read_source_bytes(path)
+        try:
+            current, _ = read_source_bytes(path)
+        except MissingSourceFileError:
+            raise
+        except OSError as error:
+            raise SourceWriteError(
+                f"failed to re-read DESIGN.md source before atomic write: "
+                f"{path}: {error}"
+            ) from error
         current_digest = hashlib.sha256(current).hexdigest()
         if current_digest != expected_digest:
             raise ConcurrentModificationError(
@@ -235,6 +243,7 @@ class DesignSystemService:
     """Design system service class."""
 
     def __init__(self) -> None:
+        self._index_lock = asyncio.Lock()
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _lock_for(self, slug: str) -> asyncio.Lock:
@@ -245,7 +254,13 @@ class DesignSystemService:
         return lock
 
     @staticmethod
-    async def index_all(*, repo_root: Path) -> list[DesignSystem]:
+    async def _require_known_slug(slug: str) -> None:
+        """Reject an unknown slug before it can allocate a per-slug lock."""
+        async with db.async_db_session() as session:
+            if await design_system_dao.get_by_slug(session, slug) is None:
+                raise UnknownDesignSystemError(f"design system not found: {slug}")
+
+    async def index_all(self, *, repo_root: Path) -> list[DesignSystem]:
         """
         Index every DESIGN.md file discovered in a repository
 
@@ -257,23 +272,24 @@ class DesignSystemService:
         :param repo_root: Repository root path
         :return:
         """
-        root = Path(repo_root).resolve()
-        discovered = discover_design_files(root)
-        parsed_files = [
-            parse_design_file(root, design_file) for design_file in discovered
-        ]
-
-        async with db.async_db_session.begin() as session:
-            systems = [
-                await upsert_parsed_file(session, parsed_file)
-                for parsed_file in parsed_files
+        async with self._index_lock:
+            root = Path(repo_root).resolve()
+            discovered = discover_design_files(root)
+            parsed_files = [
+                parse_design_file(root, design_file) for design_file in discovered
             ]
-            await design_system_dao.delete_orphan_sources(
-                session,
-                source_root=root.as_posix(),
-                keep_slugs=[design_file.slug for design_file in discovered],
-            )
-        return systems
+
+            async with db.async_db_session.begin() as session:
+                systems = [
+                    await upsert_parsed_file(session, parsed_file)
+                    for parsed_file in parsed_files
+                ]
+                await design_system_dao.delete_orphan_sources(
+                    session,
+                    source_root=root.as_posix(),
+                    keep_slugs=[design_file.slug for design_file in discovered],
+                )
+            return systems
 
     async def get(self, *, repo_root: Path, slug: str) -> DesignSystemDetail:
         """
@@ -290,7 +306,8 @@ class DesignSystemService:
         :return:
         """
         root = Path(repo_root).resolve()
-        async with self._lock_for(slug):
+        await self._require_known_slug(slug)
+        async with self._index_lock, self._lock_for(slug):
             async with db.async_db_session() as session:
                 system = await design_system_dao.get_by_slug(session, slug)
             if system is None:
@@ -307,6 +324,10 @@ class DesignSystemService:
                 root=root, system=system, for_patch=False
             )
             async with db.async_db_session() as session:
+                if await design_system_dao.get_by_slug(session, slug) is None:
+                    raise UnknownDesignSystemError(
+                        f"design system '{slug}' was deleted while it was being queried"
+                    )
                 tokens = list(
                     await design_token_dao.get_all(session, reconciled.system.id)
                 )
@@ -347,7 +368,8 @@ class DesignSystemService:
         :return:
         """
         root = Path(repo_root).resolve()
-        async with self._lock_for(slug):
+        await self._require_known_slug(slug)
+        async with self._index_lock, self._lock_for(slug):
             async with db.async_db_session() as session:
                 system = await design_system_dao.get_by_slug(session, slug)
             if system is None:

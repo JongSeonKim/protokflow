@@ -21,19 +21,19 @@ from backend.app.protokflow.core.discovery import (
     DiscoveredDesignFile,
     discover_design_files,
 )
-from backend.app.protokflow.core.errors import (
+from backend.app.protokflow.core.errors import InvalidEncodingError
+from backend.app.protokflow.crud.crud_design_system import design_system_dao
+from backend.app.protokflow.crud.crud_design_token import design_token_dao
+from backend.app.protokflow.model import DesignSystem, DesignToken
+from backend.app.protokflow.model.types import utcnow
+from backend.app.protokflow.service.errors import (
     ConcurrentModificationError,
-    InvalidEncodingError,
     MissingSourceFileError,
     TokenReparentingError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
     UnsupportedSourceLinkError,
 )
-from backend.app.protokflow.crud.crud_design_system import design_system_dao
-from backend.app.protokflow.crud.crud_design_token import design_token_dao
-from backend.app.protokflow.model import DesignSystem, DesignToken
-from backend.app.protokflow.model.types import utcnow
 from backend.database import db
 
 

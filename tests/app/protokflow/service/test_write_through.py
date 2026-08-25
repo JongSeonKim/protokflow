@@ -13,19 +13,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import SessionTransaction
 
 from backend.app.protokflow.core.design_md import parse_design_md, split_front_matter
-from backend.app.protokflow.core.errors import (
-    ConcurrentModificationError,
-    MissingSourceFileError,
-    UnknownDesignSystemError,
-    UnknownTokenPathError,
-    UnbackedDesignSystemError,
-    UnsupportedSourceLinkError,
-)
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
+from backend.app.protokflow.core.errors import UnknownTokenPathError
 from backend.app.protokflow.service import design_system_service as service_module
 from backend.app.protokflow.service.design_system_service import design_system_service
+from backend.app.protokflow.service.errors import (
+    ConcurrentModificationError,
+    MissingSourceFileError,
+    UnknownDesignSystemError,
+    UnbackedDesignSystemError,
+    UnsupportedSourceLinkError,
+)
 from backend.database import db
 
 _DESIGN_MD = (

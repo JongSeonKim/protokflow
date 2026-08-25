@@ -13,7 +13,6 @@ from backend.app.protokflow.core.design_md import parse_design_md
 from backend.app.protokflow.core.errors import (
     FencedYamlBlockError,
     InvalidEncodingError,
-    TokenReparentingError,
     YamlAnchorError,
 )
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
@@ -24,6 +23,7 @@ from backend.app.protokflow.service.design_system_service import (
     _build_design_tokens,
     design_system_service,
 )
+from backend.app.protokflow.service.errors import TokenReparentingError
 from backend.database import db
 
 

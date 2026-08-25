@@ -56,24 +56,32 @@ def _parse_design_content(path: Path, content: bytes) -> ParsedDesignSystem:
 
 def _read_design_file(
     design_file: DiscoveredDesignFile,
-) -> tuple[bytes, ParsedDesignSystem]:
-    """Read one design file, mapping a missing source to a domain error."""
+) -> tuple[bytes, os.stat_result, ParsedDesignSystem]:
+    """Read one design file, mapping a missing source to a domain error.
+
+    The bytes and the metadata are taken from one open descriptor so that the
+    digest, mtime, and size recorded for a design system always describe the
+    same file version. Reading and stat-ing separately lets an external save
+    land between them, which stores the digest of one version beside the
+    metadata of another and defeats the change pre-check.
+    """
     try:
-        content = design_file.path.read_bytes()
+        with design_file.path.open("rb") as handle:
+            content = handle.read()
+            stat = os.fstat(handle.fileno())
     except (FileNotFoundError, IsADirectoryError) as error:
         raise MissingSourceFileError(
             f"source file for design system '{design_file.slug}' is missing: "
             f"{design_file.path}"
         ) from error
-    return content, _parse_design_content(design_file.path, content)
+    return content, stat, _parse_design_content(design_file.path, content)
 
 
 def _parse_design_file(
     repo_root: Path, design_file: DiscoveredDesignFile
 ) -> _ParsedDesignFile:
     """Read, digest, and parse one discovered file without database access."""
-    content, parsed = _read_design_file(design_file)
-    stat = design_file.path.stat()
+    content, stat, parsed = _read_design_file(design_file)
     return _ParsedDesignFile(
         slug=design_file.slug,
         source_path=design_file.path.relative_to(repo_root).as_posix(),
@@ -132,12 +140,38 @@ async def _persist_design_files(
         return systems
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory entry so a completed rename survives a crash.
+
+    Not every platform lets a directory be opened for fsync, and a filesystem
+    that refuses is not a write failure, so an unsupported call is ignored.
+    """
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
     """Write bytes to a file atomically via a same-directory temporary file.
 
     A partial write must never corrupt a Git-tracked DESIGN.md file, so the
-    replacement is prepared beside the target and swapped in with rename.
-    Returns the post-replacement file metadata for sync bookkeeping.
+    replacement is prepared beside the target and swapped in with rename. The
+    bytes are forced to disk before the swap and the directory entry after it,
+    because the storage topology treats the file as the recovery source of
+    truth: a crash that reverts a file the database already committed would
+    leave the database ahead with no way back.
+
+    Returns the metadata of the written file, taken from the temporary file's
+    own descriptor rather than from the target path after the rename. The
+    rename preserves the inode, so this describes the bytes this call wrote
+    even when another writer replaces the path immediately afterwards.
     """
     descriptor, temp_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
@@ -146,9 +180,13 @@ def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            stat = os.fstat(handle.fileno())
         shutil.copymode(path, temp_path)
         os.replace(temp_path, path)
-        return path.stat()
+        _fsync_directory(path.parent)
+        return stat
     except BaseException:
         temp_path.unlink(missing_ok=True)
         raise
@@ -205,7 +243,7 @@ class DesignSystemService:
 
         source_path = root / system.source_path
         source = DiscoveredDesignFile(slug=slug, path=source_path)
-        _, current = await asyncio.to_thread(_read_design_file, source)
+        _, _, current = await asyncio.to_thread(_read_design_file, source)
         patched_text = serialize_design_md(
             front_matter_raw=current.front_matter_raw,
             closing_fence=current.closing_fence,
@@ -221,7 +259,7 @@ class DesignSystemService:
             source_path=system.source_path,
             source_digest=hashlib.sha256(patched_bytes).hexdigest(),
             source_mtime_ns=stat.st_mtime_ns,
-            source_size=len(patched_bytes),
+            source_size=stat.st_size,
             parsed=_parse_design_content(source_path, patched_bytes),
         )
         persisted = await _persist_design_files([written])

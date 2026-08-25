@@ -6,6 +6,7 @@ import difflib
 import hashlib
 import os
 from pathlib import Path
+from stat import S_ISDIR
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,7 @@ from backend.app.protokflow.core.errors import (
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
+from backend.app.protokflow.service import design_system_service as service_module
 from backend.app.protokflow.service.design_system_service import design_system_service
 from backend.database import db
 
@@ -275,3 +277,103 @@ async def test_missing_source_file_raises_domain_error(
         await design_system_service.apply_token_patch(
             repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#000"}
         )
+
+
+async def test_source_metadata_describes_one_file_version(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Digest and stat must come from one observation, even under an external save."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    indexed = _DESIGN_MD.encode()
+    design_md_path.write_bytes(indexed)
+    external_edit = (
+        _DESIGN_MD.replace("#222222", "#333333").encode() + b"\n# appended\n"
+    )
+    assert len(external_edit) != len(indexed)
+
+    real_parse = service_module._parse_design_content
+
+    def parse_after_external_save(path: Path, content: bytes) -> object:
+        # An editor saves a longer document once the bytes have been read.
+        design_md_path.write_bytes(external_edit)
+        return real_parse(path, content)
+
+    monkeypatch.setattr(
+        service_module, "_parse_design_content", parse_after_external_save
+    )
+
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    system = await _system_by_slug("default")
+    assert system.source_digest == hashlib.sha256(indexed).hexdigest()
+    assert system.source_size == len(indexed)
+
+
+async def test_atomic_write_forces_bytes_and_directory_entry_to_disk(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The patched bytes and the rename must both be flushed past the page cache."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        synced.append("dir" if S_ISDIR(os.fstat(fd).st_mode) else "file")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+
+    await design_system_service.apply_token_patch(
+        repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#0B0E14"}
+    )
+
+    assert synced == ["file", "dir"]
+
+
+async def test_patch_records_metadata_of_the_bytes_it_wrote(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A writer replacing the path right after the swap must not steal the bookkeeping."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    real_replace = os.replace
+    intruder = _DESIGN_MD.encode() + b"\n# written by someone else\n"
+    written: list[bytes] = []
+    written_mtime_ns: list[int] = []
+
+    def replace_then_intrude(
+        src: str | os.PathLike[str], dst: str | os.PathLike[str]
+    ) -> None:
+        real_replace(src, dst)
+        written.append(design_md_path.read_bytes())
+        written_mtime_ns.append(os.stat(design_md_path).st_mtime_ns)
+        design_md_path.write_bytes(intruder)
+        # Stamp an unmistakable mtime so bookkeeping taken from the path after
+        # the swap is distinguishable from bookkeeping taken from our own write.
+        os.utime(design_md_path, ns=(0, 0))
+
+    monkeypatch.setattr(os, "replace", replace_then_intrude)
+
+    updated = await design_system_service.apply_token_patch(
+        repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#0B0E14"}
+    )
+
+    assert len(written) == 1
+    assert written[0] != intruder
+    assert updated.source_mtime_ns == written_mtime_ns[0]
+    assert updated.source_size == len(written[0])
+    assert updated.source_digest == hashlib.sha256(written[0]).hexdigest()

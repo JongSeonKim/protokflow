@@ -553,7 +553,7 @@ requires-dist = [
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "ruamel-yaml", specifier = "==0.19.1" },
     { name = "sqlalchemy", specifier = "==2.0.52" },
-    { name = "sqlalchemy-crud-plus", specifier = ">=1.13.3" },
+    { name = "sqlalchemy-crud-plus", specifier = "==1.13.3" },
     { name = "starlette", specifier = "==1.6.0" },
     { name = "starlette-context", specifier = "==0.5.1" },
     { name = "user-agents", specifier = "==2.2.0" },

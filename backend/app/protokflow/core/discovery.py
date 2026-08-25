@@ -17,7 +17,11 @@ class DiscoveredDesignFile:
 
 
 def discover_design_files(repo_root: Path) -> list[DiscoveredDesignFile]:
-    """Return root and sibling DESIGN.md files in stable order without recursion."""
+    """Return root and sibling DESIGN.md files in stable order without recursion.
+
+    The markdown suffix match is case-insensitive, so design/Admin.MD is
+    discovered just like design/admin.md.
+    """
     root = Path(repo_root).resolve()
     discovered: list[DiscoveredDesignFile] = []
 
@@ -30,7 +34,7 @@ def discover_design_files(repo_root: Path) -> list[DiscoveredDesignFile]:
         markdown_files = [
             path
             for path in design_dir.iterdir()
-            if path.is_file() and path.suffix == ".md"
+            if path.is_file() and path.suffix.lower() == ".md"
         ]
         discovered.extend(
             DiscoveredDesignFile(slug=path.stem, path=path)

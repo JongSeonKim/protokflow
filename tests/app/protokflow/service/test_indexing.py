@@ -9,7 +9,11 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.protokflow.core.errors import FencedYamlBlockError, YamlAnchorError
+from backend.app.protokflow.core.errors import (
+    FencedYamlBlockError,
+    InvalidEncodingError,
+    YamlAnchorError,
+)
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
@@ -100,6 +104,19 @@ async def test_indexing_empty_repository_returns_empty_result(
     del test_db
 
     assert await design_system_service.index_all(repo_root=tmp_path) == []
+    assert await _systems() == []
+
+
+async def test_non_utf8_file_is_rejected_with_domain_error(
+    tmp_path: Path,
+    test_db: AsyncSession,
+) -> None:
+    del test_db
+    (tmp_path / "DESIGN.md").write_bytes(b"# Guide\n\xff\xfe\n")
+
+    with pytest.raises(InvalidEncodingError):
+        await design_system_service.index_all(repo_root=tmp_path)
+
     assert await _systems() == []
 
 

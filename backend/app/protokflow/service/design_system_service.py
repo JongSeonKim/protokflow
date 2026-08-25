@@ -12,6 +12,7 @@ from backend.app.protokflow.core.discovery import (
     DiscoveredDesignFile,
     discover_design_files,
 )
+from backend.app.protokflow.core.errors import InvalidEncodingError
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem, DesignToken
@@ -38,7 +39,13 @@ def _parse_design_file(
     with design_file.path.open("rb") as file_handle:
         content = file_handle.read()
         stat = os.fstat(file_handle.fileno())
-    parsed = parse_design_md(content.decode("utf-8"))
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise InvalidEncodingError(
+            f"{design_file.path} is not valid UTF-8: {error}"
+        ) from error
+    parsed = parse_design_md(text)
     return _ParsedDesignFile(
         slug=design_file.slug,
         source_path=design_file.path.relative_to(repo_root).as_posix(),

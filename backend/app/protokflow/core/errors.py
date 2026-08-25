@@ -33,6 +33,10 @@ class DuplicateSlugError(DesignMdError):
     """
 
 
+class InvalidEncodingError(DesignMdError):
+    """Raised when a DESIGN.md file is not valid UTF-8 text."""
+
+
 class UnterminatedFrontMatterError(DesignMdError):
     """Raised when an opening front matter fence ('---') lacks a matching closing fence."""
 

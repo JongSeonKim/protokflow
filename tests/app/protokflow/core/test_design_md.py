@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.app.protokflow.core.designmd import (
+from backend.app.protokflow.core.design_md import (
     ParsedDesignSystem,
     parse_design_md,
     serialize_design_md,

@@ -1,9 +1,9 @@
-"""DESIGN.md front matter codec with byte-faithful in-place patching.
+"""DESIGN.md front matter codec with lossless in-place patching.
 
-Parses a DESIGN.md file (YAML front matter + Markdown guide) into the
-normalized token shape used by the storage layer, and re-emits files by
-patching the preserved original front matter so comments, blank lines,
-quoting styles, and key order survive token edits (R16, KTD1).
+Parses a DESIGN.md document (YAML front matter and Markdown guide) into the
+normalized token format used by the storage layer, and re-emits files by
+patching the original front matter in-place so comments, blank lines,
+quoting styles, and key order are preserved across token updates.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
-from ruamel.yaml.events import AliasEvent
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.events import AliasEvent
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScalarString
 
 from backend.app.protokflow.core.errors import (
@@ -47,47 +47,53 @@ _QUOTED_STYLES = (SingleQuotedScalarString, DoubleQuotedScalarString)
 
 @dataclass(frozen=True, slots=True)
 class TokenRow:
-    """One normalized design_tokens-shaped token."""
+    """A normalized design token row representation."""
 
     tier: str  # 'foundation' | 'component'
-    token_path: str  # e.g. colors.primary, typography.body-md.fontSize
-    value: str  # the storage layer's column is text (KTD4)
+    token_path: (
+        str  # Dot-delimited path, e.g. 'colors.primary', 'typography.body-md.fontSize'
+    )
+    value: str  # Normalized token value stored as string text
 
 
 @dataclass(slots=True)
 class ParsedDesignSystem:
-    """Everything the storage layer needs from one DESIGN.md file."""
+    """Parsed representation and metadata of a DESIGN.md document."""
 
-    front_matter_raw: str | None  # None = no front matter block
-    closing_fence: str  # exact closing fence line including its line ending
-    guide_markdown: str  # verbatim body after the closing fence
-    eol: str  # document line ending: "\n" or "\r\n"
-    title: str | None  # front matter 'name'
-    description: str | None
-    spec_version: str | None  # front matter 'version'
+    front_matter_raw: str | None  # Raw YAML front matter text, or None if omitted
+    closing_fence: str  # Exact closing fence line including its trailing line ending
+    guide_markdown: str  # Verbatim Markdown guide content following the closing fence
+    eol: str  # Detected document line ending ('\n' or '\r\n')
+    title: str | None  # Design system name from front matter ('name')
+    description: str | None  # Design system description from front matter
+    spec_version: str | None  # Specification version from front matter ('version')
     front_matter_extras: dict[str, Any] = field(default_factory=dict)
     tokens: list[TokenRow] = field(default_factory=list)
 
 
 def _yaml() -> YAML:
+    """Configure a round-trip YAML parser preserving quotes and indentation."""
     yaml = YAML(typ="rt")
     yaml.preserve_quotes = True
-    yaml.width = 4096  # never re-wrap a long scalar
+    yaml.width = 4096  # Prevent automatic line wrapping of long scalar values
     yaml.indent(mapping=2, sequence=4, offset=2)
     return yaml
 
 
 @dataclass(frozen=True, slots=True)
 class FrontMatterSplit:
-    """Verbatim envelope pieces of a split DESIGN.md document."""
+    """Envelope components extracted from a DESIGN.md document."""
 
-    front_matter_raw: str | None  # None = no front matter block
-    closing_fence: str
-    guide_markdown: str
-    eol: str
+    front_matter_raw: (
+        str | None
+    )  # Raw front matter text, or None if no front matter block exists
+    closing_fence: str  # Closing fence line including its line ending
+    guide_markdown: str  # Markdown body following the front matter block
+    eol: str  # Document line ending ('\n' or '\r\n')
 
 
 def _reject_mixed_line_endings(text: str) -> None:
+    """Validate that the document uses consistent LF or CRLF line endings throughout."""
     saw_lf = False
     saw_crlf = False
     for line in text.splitlines(keepends=True):
@@ -106,7 +112,7 @@ def _reject_mixed_line_endings(text: str) -> None:
 
 
 def split_front_matter(text: str) -> FrontMatterSplit:
-    """Split a document into verbatim envelope pieces; fences are excluded."""
+    """Split a document into front matter and guide markdown components without altering content."""
     _reject_mixed_line_endings(text)
     eol = "\r\n" if "\r\n" in text else "\n"
     lines = text.splitlines(keepends=True)
@@ -126,11 +132,11 @@ def split_front_matter(text: str) -> FrontMatterSplit:
 
 
 def _load_front_matter(raw: str) -> CommentedMap:
+    """Parse raw front matter YAML into a round-trip CommentedMap structure."""
     if not raw.strip():
         return CommentedMap()
-    # Normalize CRLF before loading: ruamel's round-trip dump drops some
-    # EOL blank lines when the input uses CRLF. The raw text is preserved
-    # separately, so this only affects the in-memory tree.
+    # Normalize CRLF to LF before loading: ruamel.yaml round-trip dump can drop
+    # blank lines when parsing CRLF. Raw text is preserved separately.
     try:
         loaded = _yaml().load(io.StringIO(raw.replace("\r\n", "\n")))
     except YAMLError as exc:
@@ -145,20 +151,20 @@ def _load_front_matter(raw: str) -> CommentedMap:
 
 
 def _reject_fenced_yaml_blocks(guide_markdown: str) -> None:
+    """Ensure no fenced YAML blocks exist in the Markdown guide body."""
     for line in guide_markdown.splitlines():
         if _FENCED_YAML_RE.match(line):
             raise FencedYamlBlockError(
                 "fenced yaml block in the guide body is not a token source; "
-                "move those tokens into the front matter (KTD10)"
+                "move those tokens into the front matter"
             )
 
 
 def _reject_anchors(front_matter_raw: str) -> None:
-    """Reject anchors and aliases on the YAML event stream.
+    """Reject YAML anchors and aliases by scanning the raw event stream.
 
-    The composed tree loses anchors on mapping keys and on null scalars, so
-    the gate runs on events where every anchored node and alias is still
-    visible, before alias resolution can hide them.
+    Parsing at the event stream level ensures anchors on mapping keys and null
+    scalars are detected before alias resolution hides them in the parsed tree.
     """
     try:
         for event in _yaml().parse(io.StringIO(front_matter_raw)):
@@ -169,19 +175,21 @@ def _reject_anchors(front_matter_raw: str) -> None:
                     f"front matter must not use YAML anchors or aliases "
                     f"(found '{sigil}{anchor}'); replace them with design.md "
                     f"reference syntax such as {{colors.primary}} so in-place "
-                    f"patching keeps references sound (KTD3)"
+                    f"patching keeps references sound"
                 )
     except YAMLError as exc:
         raise InvalidFrontMatterError(f"front matter is not valid YAML: {exc}") from exc
 
 
 def _scalar_text(node: Any) -> str:
+    """Convert scalar YAML values to canonical string representations."""
     if isinstance(node, bool):
         return "true" if node else "false"
     return str(node)
 
 
 def _reject_dotted_token_name(token_path: str, name: Any) -> None:
+    """Validate that token keys do not contain dots, which are reserved for path nesting."""
     if "." in str(name):
         raise DottedTokenNameError(
             f"token names must not contain dots (found '{token_path}'); "
@@ -190,6 +198,7 @@ def _reject_dotted_token_name(token_path: str, name: Any) -> None:
 
 
 def _flatten(group_name: str, group: Any, tier: str) -> list[TokenRow]:
+    """Flatten a token group mapping into a list of normalized TokenRow objects."""
     if not isinstance(group, dict):
         raise NonScalarTokenError(
             f"token group '{group_name}' must be a mapping of token names to values"
@@ -236,6 +245,7 @@ def _flatten(group_name: str, group: Any, tier: str) -> list[TokenRow]:
 
 
 def _flatten_tokens(front_matter: CommentedMap) -> list[TokenRow]:
+    """Extract and flatten all foundation and component token groups from front matter."""
     rows: list[TokenRow] = []
     for group_name in FOUNDATION_GROUPS:
         if group_name in front_matter:
@@ -246,12 +256,13 @@ def _flatten_tokens(front_matter: CommentedMap) -> list[TokenRow]:
 
 
 def _optional_text(front_matter: CommentedMap, key: str) -> str | None:
+    """Safely retrieve an optional text value from front matter mapping."""
     value = front_matter.get(key)
     return None if value is None else str(value)
 
 
 def parse_design_md(text: str) -> ParsedDesignSystem:
-    """Parse a DESIGN.md file, rejecting anchors and fenced yaml blocks."""
+    """Parse a DESIGN.md document into normalized token rows and metadata."""
     split = split_front_matter(text)
     _reject_fenced_yaml_blocks(split.guide_markdown)
     if split.front_matter_raw and split.front_matter_raw.strip():
@@ -277,7 +288,7 @@ def parse_design_md(text: str) -> ParsedDesignSystem:
 
 
 def _set_token(front_matter: CommentedMap, token_path: str, value: str) -> None:
-    """Set one token in the live tree, keeping the leaf's quoting style."""
+    """Update a single token in the CommentedMap tree while preserving original quoting style."""
     parts = token_path.split(".")
     cursor: Any = front_matter
     for part in parts[:-1]:
@@ -291,12 +302,10 @@ def _set_token(front_matter: CommentedMap, token_path: str, value: str) -> None:
 
 
 def _plain_yaml_scalar(value: str) -> Any:
-    """Re-resolve a plain token value the way YAML would parse it.
+    """Convert unquoted string token values into native Python types for YAML serialization.
 
-    A plain target emitted as a Python string would come back quoted (ruamel
-    preserves str-ness), so numeric and boolean patch values are converted to
-    their native scalars and stay bare in the file. Non-canonical forms fall
-    back to the string and let ruamel decide whether quoting is required.
+    Converts boolean and numeric strings back to native Python bool/int/float types
+    so ruamel.yaml emits them as unquoted scalars rather than quoted strings.
     """
     if value in ("true", "false"):
         return value == "true"
@@ -323,7 +332,7 @@ def serialize_design_md(
     eol: str,
     token_patches: Mapping[str, str] | None = None,
 ) -> str:
-    """Re-emit a DESIGN.md file, patching only the requested token paths."""
+    """Re-serialize a DESIGN.md document, applying in-place patches to specified token paths."""
     if eol not in ("\n", "\r\n"):
         raise MixedLineEndingsError("line ending must be LF or CRLF")
     patches = token_patches or {}
@@ -353,7 +362,7 @@ def serialize_design_md(
             if eol == "\r\n":
                 dumped = dumped.replace("\n", "\r\n")
         else:
-            # An unedited document re-emits its preserved front matter verbatim.
+            # If no patches were applied, re-emit the original front matter verbatim.
             dumped = front_matter_raw
         output = f"{FENCE}{eol}{dumped}{closing_fence}{guide_markdown}"
     _reject_mixed_line_endings(output)

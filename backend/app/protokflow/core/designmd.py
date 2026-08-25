@@ -21,9 +21,12 @@ from ruamel.yaml.error import YAMLError
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScalarString
 
 from backend.app.protokflow.core.errors import (
+    DottedTokenNameError,
     FencedYamlBlockError,
     InvalidFrontMatterError,
     MixedLineEndingsError,
+    NonScalarTokenError,
+    NullTokenValueError,
     UnknownTokenPathError,
     UnterminatedFrontMatterError,
     YamlAnchorError,
@@ -170,25 +173,52 @@ def _reject_anchors(front_matter_raw: str) -> None:
 def _scalar_text(node: Any) -> str:
     if isinstance(node, bool):
         return "true" if node else "false"
-    if node is None:
-        return ""
     return str(node)
 
 
+def _reject_dotted_token_name(token_path: str, name: Any) -> None:
+    if "." in str(name):
+        raise DottedTokenNameError(
+            f"token names must not contain dots (found '{token_path}'); "
+            f"dots are reserved for the flattened token path notation"
+        )
+
+
 def _flatten(group_name: str, group: Any, tier: str) -> list[TokenRow]:
-    rows: list[TokenRow] = []
     if not isinstance(group, dict):
-        return rows
+        raise NonScalarTokenError(
+            f"token group '{group_name}' must be a mapping of token names to values"
+        )
+    rows: list[TokenRow] = []
     for name, node in group.items():
+        _reject_dotted_token_name(f"{group_name}.{name}", name)
         if isinstance(node, dict):
             for prop, leaf in node.items():
+                token_path = f"{group_name}.{name}.{prop}"
+                _reject_dotted_token_name(token_path, prop)
+                if isinstance(leaf, (dict, list)):
+                    raise NonScalarTokenError(
+                        f"token '{token_path}' must be a scalar value"
+                    )
+                if leaf is None:
+                    raise NullTokenValueError(
+                        f"token '{token_path}' must not be null or empty"
+                    )
                 rows.append(
                     TokenRow(
                         tier=tier,
-                        token_path=f"{group_name}.{name}.{prop}",
+                        token_path=token_path,
                         value=_scalar_text(leaf),
                     )
                 )
+        elif isinstance(node, list):
+            raise NonScalarTokenError(
+                f"token '{group_name}.{name}' must be a scalar value"
+            )
+        elif node is None:
+            raise NullTokenValueError(
+                f"token '{group_name}.{name}' must not be null or empty"
+            )
         else:
             rows.append(
                 TokenRow(
@@ -197,6 +227,16 @@ def _flatten(group_name: str, group: Any, tier: str) -> list[TokenRow]:
                     value=_scalar_text(node),
                 )
             )
+    return rows
+
+
+def _flatten_tokens(front_matter: CommentedMap) -> list[TokenRow]:
+    rows: list[TokenRow] = []
+    for group_name in FOUNDATION_GROUPS:
+        if group_name in front_matter:
+            rows += _flatten(group_name, front_matter[group_name], "foundation")
+    if COMPONENT_GROUP in front_matter:
+        rows += _flatten(COMPONENT_GROUP, front_matter[COMPONENT_GROUP], "component")
     return rows
 
 
@@ -213,12 +253,7 @@ def parse_design_md(text: str) -> ParsedDesignSystem:
         _reject_anchors(split.front_matter_raw)
     front_matter = _load_front_matter(split.front_matter_raw or "")
 
-    tokens: list[TokenRow] = []
-    for group_name in FOUNDATION_GROUPS:
-        if group_name in front_matter:
-            tokens += _flatten(group_name, front_matter[group_name], "foundation")
-    if COMPONENT_GROUP in front_matter:
-        tokens += _flatten(COMPONENT_GROUP, front_matter[COMPONENT_GROUP], "component")
+    tokens = _flatten_tokens(front_matter)
 
     known = set(FOUNDATION_GROUPS) | {COMPONENT_GROUP} | set(MODELED_SCALARS)
     extras = {key: value for key, value in front_matter.items() if key not in known}
@@ -241,17 +276,38 @@ def _set_token(front_matter: CommentedMap, token_path: str, value: str) -> None:
     parts = token_path.split(".")
     cursor: Any = front_matter
     for part in parts[:-1]:
-        if not isinstance(cursor, dict) or part not in cursor:
-            raise UnknownTokenPathError(f"token path not in front matter: {token_path}")
         cursor = cursor[part]
     leaf = parts[-1]
-    if not isinstance(cursor, dict) or leaf not in cursor:
-        raise UnknownTokenPathError(f"token path not in front matter: {token_path}")
     previous = cursor[leaf]
     if isinstance(previous, _QUOTED_STYLES):
         cursor[leaf] = type(previous)(value)
     else:
-        cursor[leaf] = value
+        cursor[leaf] = _plain_yaml_scalar(value)
+
+
+def _plain_yaml_scalar(value: str) -> Any:
+    """Re-resolve a plain token value the way YAML would parse it.
+
+    A plain target emitted as a Python string would come back quoted (ruamel
+    preserves str-ness), so numeric and boolean patch values are converted to
+    their native scalars and stay bare in the file. Non-canonical forms fall
+    back to the string and let ruamel decide whether quoting is required.
+    """
+    if value in ("true", "false"):
+        return value == "true"
+    try:
+        as_int = int(value)
+    except ValueError:
+        as_int = None
+    if as_int is not None and str(as_int) == value:
+        return as_int
+    try:
+        as_float = float(value)
+    except ValueError:
+        return value
+    if repr(as_float) == value:
+        return as_float
+    return value
 
 
 def serialize_design_md(
@@ -277,6 +333,12 @@ def serialize_design_md(
         output = guide_markdown
     else:
         front_matter = _load_front_matter(front_matter_raw)
+        valid_paths = {row.token_path for row in _flatten_tokens(front_matter)}
+        for token_path in patches:
+            if token_path not in valid_paths:
+                raise UnknownTokenPathError(
+                    f"token path not in front matter: {token_path}"
+                )
         for token_path, value in patches.items():
             _set_token(front_matter, token_path, value)
         if patches:

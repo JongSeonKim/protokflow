@@ -12,9 +12,12 @@ from backend.app.protokflow.core.designmd import (
     serialize_design_md,
 )
 from backend.app.protokflow.core.errors import (
+    DottedTokenNameError,
     FencedYamlBlockError,
     InvalidFrontMatterError,
     MixedLineEndingsError,
+    NonScalarTokenError,
+    NullTokenValueError,
     UnknownTokenPathError,
     UnterminatedFrontMatterError,
     YamlAnchorError,
@@ -315,6 +318,60 @@ def test_token_tiers_cover_foundation_and_component() -> None:
     assert ("component", "components.button-primary.backgroundColor") in paths
 
 
+@pytest.mark.parametrize(
+    ("front_matter", "path"),
+    [
+        ("colors: []\n", "colors"),
+        ("colors: red\n", "colors"),
+        ("colors:\n  primary: [one, two]\n", "colors.primary"),
+        (
+            "colors:\n  primary:\n    nested:\n      deep: '#FFFFFF'\n",
+            "colors.primary.nested",
+        ),
+        ("components:\n  button: [a, b]\n", "components.button"),
+    ],
+    ids=[
+        "list-group",
+        "scalar-group",
+        "sequence-leaf",
+        "depth-four",
+        "component-sequence",
+    ],
+)
+def test_non_scalar_token_shapes_are_rejected(front_matter: str, path: str) -> None:
+    text = f"---\n{front_matter}---\n# Guide\n"
+
+    with pytest.raises(NonScalarTokenError, match=path):
+        parse_design_md(text)
+
+
+@pytest.mark.parametrize(
+    "value_line",
+    ["  primary: null\n", "  primary: ~\n", "  primary:\n"],
+    ids=["explicit-null", "tilde-null", "empty-value"],
+)
+def test_null_token_values_are_rejected(value_line: str) -> None:
+    text = f"---\ncolors:\n{value_line}---\n# Guide\n"
+
+    with pytest.raises(NullTokenValueError, match="colors.primary"):
+        parse_design_md(text)
+
+
+@pytest.mark.parametrize(
+    "front_matter",
+    [
+        "colors:\n  brand.primary: '#FFFFFF'\n",
+        "typography:\n  body.md:\n    fontSize: 16px\n",
+    ],
+    ids=["shallow-name", "nested-name"],
+)
+def test_dotted_token_names_are_rejected(front_matter: str) -> None:
+    text = f"---\n{front_matter}---\n# Guide\n"
+
+    with pytest.raises(DottedTokenNameError):
+        parse_design_md(text)
+
+
 def test_depth_three_token_paths_are_extracted() -> None:
     parsed = _parse_fixture("spec-canonical.md")
 
@@ -411,6 +468,63 @@ def test_patching_unknown_token_path_raises_clear_error() -> None:
             eol=parsed.eol,
             token_patches={"colors.nonexistent": "#000000"},
         )
+
+
+@pytest.mark.parametrize(
+    "token_path",
+    ["colors", "colors.nope.primary", "name"],
+    ids=["group-root", "missing-intermediate", "modeled-scalar-key"],
+)
+def test_patching_non_leaf_paths_raise(token_path: str) -> None:
+    parsed = _parse_fixture("team-authored.md")
+
+    with pytest.raises(UnknownTokenPathError):
+        serialize_design_md(
+            front_matter_raw=parsed.front_matter_raw,
+            closing_fence=parsed.closing_fence,
+            guide_markdown=parsed.guide_markdown,
+            eol=parsed.eol,
+            token_patches={token_path: "#000000"},
+        )
+
+
+def test_patching_bare_number_leaf_keeps_plain_style() -> None:
+    original = _read_fixture("spec-canonical.md")
+    parsed = parse_design_md(original)
+
+    patched = serialize_design_md(
+        front_matter_raw=parsed.front_matter_raw,
+        closing_fence=parsed.closing_fence,
+        guide_markdown=parsed.guide_markdown,
+        eol=parsed.eol,
+        token_patches={"typography.body-md.fontWeight": "500"},
+    )
+
+    original_lines = original.splitlines(keepends=True)
+    patched_lines = patched.splitlines(keepends=True)
+    assert len(original_lines) == len(patched_lines)
+    changed = [
+        (left, right)
+        for left, right in zip(original_lines, patched_lines, strict=True)
+        if left != right
+    ]
+    assert len(changed) == 1
+    assert changed[0][1].strip() == "fontWeight: 500"
+
+
+def test_patching_single_quoted_leaf_keeps_style() -> None:
+    parsed = _parse_fixture("adversarial.md")
+
+    patched = serialize_design_md(
+        front_matter_raw=parsed.front_matter_raw,
+        closing_fence=parsed.closing_fence,
+        guide_markdown=parsed.guide_markdown,
+        eol=parsed.eol,
+        token_patches={"colors.tertiary": "#3AA6B9"},
+    )
+
+    patched_line = next(line for line in patched.splitlines() if "tertiary" in line)
+    assert "'#3AA6B9'" in patched_line
 
 
 def test_anchor_in_front_matter_is_rejected_with_reference_guidance() -> None:

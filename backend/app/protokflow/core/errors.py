@@ -42,3 +42,28 @@ class MixedLineEndingsError(DesignMdError):
 
 class InvalidFrontMatterError(DesignMdError):
     """Front matter is not valid YAML syntax or not a top-level mapping."""
+
+
+class NonScalarTokenError(DesignMdError):
+    """A token group or token leaf does not have the required scalar shape.
+
+    Token groups must be mappings, nesting is limited to one level below the
+    group, and leaves must be scalar values; anything else would be indexed
+    as a lossy Python representation.
+    """
+
+
+class NullTokenValueError(DesignMdError):
+    """A token value is an explicit YAML null or an empty value.
+
+    Null is not a meaningful design token value and cannot be distinguished
+    from an empty string after normalization, so it is rejected up front.
+    """
+
+
+class DottedTokenNameError(DesignMdError):
+    """A token name contains a dot.
+
+    Dots are reserved for the flattened token path notation; a dotted YAML
+    key would produce a path that can never be patched.
+    """

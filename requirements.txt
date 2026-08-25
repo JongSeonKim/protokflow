@@ -65,6 +65,7 @@ pydantic==2.13.4
     #   fastapi-pagination
     #   protokflow
     #   pydantic-settings
+    #   sqlalchemy-crud-plus
 pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.15.0
@@ -93,6 +94,10 @@ ruamel-yaml==0.19.1
     #   protokflow
 ruff==0.15.22
 sqlalchemy==2.0.52
+    # via
+    #   protokflow
+    #   sqlalchemy-crud-plus
+sqlalchemy-crud-plus==1.13.3
     # via protokflow
 starlette==1.6.0
     # via

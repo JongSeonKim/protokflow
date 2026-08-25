@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.core.errors import FencedYamlBlockError, YamlAnchorError
-from backend.app.protokflow.crud import list_design_tokens
+from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.service.design_system_service import design_system_service
 from backend.database import db
@@ -67,7 +67,8 @@ async def test_indexing_discovers_two_systems_and_stores_source_metadata(
 
     async with db.async_db_session.begin() as session:
         token_counts = [
-            len(await list_design_tokens(session, system.id)) for system in systems
+            len(await design_token_dao.get_all(session, system.id))
+            for system in systems
         ]
     assert token_counts == [1, 1]
 
@@ -88,7 +89,7 @@ async def test_front_matter_is_optional_and_uses_slug_title_fallback(
     assert systems[0].title == "plain"
     assert systems[0].front_matter_raw == ""
     async with db.async_db_session.begin() as session:
-        assert await list_design_tokens(session, systems[0].id) == []
+        assert await design_token_dao.get_all(session, systems[0].id) == []
 
 
 async def test_indexing_empty_repository_returns_empty_result(
@@ -145,7 +146,7 @@ async def test_reindex_is_idempotent_and_does_not_duplicate_tokens(
     systems = await _systems()
     assert len(systems) == 1
     async with db.async_db_session.begin() as session:
-        tokens = await list_design_tokens(session, systems[0].id)
+        tokens = await design_token_dao.get_all(session, systems[0].id)
     assert [(token.token_path, token.value) for token in tokens] == [
         ("colors.primary", "#111")
     ]
@@ -167,7 +168,7 @@ async def test_reindex_after_database_recreation_restores_systems_and_tokens(
         before_tokens = {
             system.slug: [
                 (token.tier, token.token_path, token.value)
-                for token in await list_design_tokens(session, system.id)
+                for token in await design_token_dao.get_all(session, system.id)
             ]
             for system in before
         }
@@ -180,7 +181,7 @@ async def test_reindex_after_database_recreation_restores_systems_and_tokens(
         after_tokens = {
             system.slug: [
                 (token.tier, token.token_path, token.value)
-                for token in await list_design_tokens(session, system.id)
+                for token in await design_token_dao.get_all(session, system.id)
             ]
             for system in after
         }

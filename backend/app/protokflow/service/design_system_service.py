@@ -11,7 +11,8 @@ from backend.app.protokflow.core.discovery import (
     DiscoveredDesignFile,
     discover_design_files,
 )
-from backend.app.protokflow.crud import replace_design_tokens, upsert_design_system
+from backend.app.protokflow.crud.crud_design_system import design_system_dao
+from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem, DesignToken
 from backend.app.protokflow.model.types import utcnow
 from backend.database import db
@@ -74,10 +75,10 @@ async def _persist_design_files(
     async with db.async_db_session.begin() as session:
         systems: list[DesignSystem] = []
         for parsed_file in parsed_files:
-            design_system = await upsert_design_system(
+            design_system = await design_system_dao.upsert(
                 session, _design_system_from(parsed_file)
             )
-            await replace_design_tokens(
+            await design_token_dao.replace(
                 session,
                 design_system.id,
                 [

@@ -97,7 +97,7 @@ class MissingSourceFileError(StorageLayerError):
 
 
 class TokenReparentingError(StorageLayerError):
-    """Raised when token replacement would silently re-parent tokens across systems."""
+    """Raised when token replacement would silently reparent tokens across systems."""
 
 
 class ConcurrentModificationError(StorageLayerError):

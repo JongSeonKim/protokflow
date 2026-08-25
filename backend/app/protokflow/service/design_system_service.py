@@ -25,6 +25,7 @@ from backend.app.protokflow.core.errors import (
     ConcurrentModificationError,
     InvalidEncodingError,
     MissingSourceFileError,
+    TokenReparentingError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
 )
@@ -94,7 +95,7 @@ def _parse_design_file(
     )
 
 
-def _design_system_from(parsed_file: _ParsedDesignFile) -> DesignSystem:
+def _build_design_system(parsed_file: _ParsedDesignFile) -> DesignSystem:
     """Build a storage model from already validated source data."""
     parsed = parsed_file.parsed
     return DesignSystem(
@@ -113,6 +114,28 @@ def _design_system_from(parsed_file: _ParsedDesignFile) -> DesignSystem:
     )
 
 
+def _build_design_tokens(
+    parsed_file: _ParsedDesignFile, design_system_id: str
+) -> list[DesignToken]:
+    """Build storage token models from validated source data."""
+    tokens = [
+        DesignToken(
+            design_system_id,
+            token.tier,
+            token.token_path,
+            token.value,
+        )
+        for token in parsed_file.parsed.tokens
+    ]
+    for token in tokens:
+        if token.design_system_id != design_system_id:
+            raise TokenReparentingError(
+                f"cannot reparent token '{token.token_path}' from design system "
+                f"'{token.design_system_id}' to '{design_system_id}'"
+            )
+    return tokens
+
+
 async def _persist_design_files(
     parsed_files: list[_ParsedDesignFile],
 ) -> list[DesignSystem]:
@@ -123,20 +146,12 @@ async def _persist_design_files(
         systems: list[DesignSystem] = []
         for parsed_file in parsed_files:
             design_system = await design_system_dao.upsert(
-                session, _design_system_from(parsed_file)
+                session, _build_design_system(parsed_file)
             )
             await design_token_dao.replace(
                 session,
                 design_system.id,
-                [
-                    DesignToken(
-                        design_system.id,
-                        token.tier,
-                        token.token_path,
-                        token.value,
-                    )
-                    for token in parsed_file.parsed.tokens
-                ],
+                _build_design_tokens(parsed_file, design_system.id),
             )
             systems.append(design_system)
         return systems

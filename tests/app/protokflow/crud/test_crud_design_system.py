@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
+from textwrap import dedent
+
 import pytest
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.protokflow.crud.crud_design_system import design_system_dao
+from backend.app.protokflow.crud.crud_design_system import (
+    CRUDDesignSystem,
+    design_system_dao,
+)
 from backend.app.protokflow.model import DesignSystem
+from backend.common.model import DateTimeMixin, LogicalDeleteMixin
 
 
 async def test_upsert_design_system_creates_slug_with_ulid(
@@ -156,3 +165,34 @@ async def test_front_matter_raw_round_trips_comments_and_blank_lines(
 
     assert loaded is not None
     assert loaded.front_matter_raw == raw
+
+
+def test_upsert_update_path_assigns_every_file_driven_column() -> None:
+    """Guard: a new DesignSystem column must be added to the upsert update path."""
+    function = ast.parse(dedent(inspect.getsource(CRUDDesignSystem.upsert)))
+    assigned = {
+        target.attr
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute)
+        and isinstance(node.value, ast.Attribute)
+        and target.attr == node.value.attr
+    }
+    ownership_excluded = {"id", "slug", "derived_from_id"}
+    audit_columns = {
+        name
+        for mixin in (DateTimeMixin, LogicalDeleteMixin)
+        for name in getattr(mixin, "__annotations__", {})
+    }
+    mapper_columns = {
+        attribute.key for attribute in sa.inspect(DesignSystem).column_attrs
+    }
+
+    missing = mapper_columns - ownership_excluded - audit_columns - assigned
+
+    assert not missing, (
+        f"CRUDDesignSystem.upsert update path does not assign column(s): "
+        f"{sorted(missing)}; new columns must be assigned or added to the "
+        f"ownership exclusion set"
+    )

@@ -2,17 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
+import shutil
+import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from backend.app.protokflow.core.design_md import ParsedDesignSystem, parse_design_md
+from backend.app.protokflow.core.design_md import (
+    ParsedDesignSystem,
+    parse_design_md,
+    serialize_design_md,
+)
 from backend.app.protokflow.core.discovery import (
     DiscoveredDesignFile,
     discover_design_files,
 )
-from backend.app.protokflow.core.errors import InvalidEncodingError
+from backend.app.protokflow.core.errors import (
+    InvalidEncodingError,
+    MissingSourceFileError,
+    UnknownDesignSystemError,
+    UnbackedDesignSystemError,
+)
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem, DesignToken
@@ -32,20 +45,35 @@ class _ParsedDesignFile:
     parsed: ParsedDesignSystem
 
 
+def _parse_design_content(path: Path, content: bytes) -> ParsedDesignSystem:
+    """Decode and parse DESIGN.md bytes without database access."""
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise InvalidEncodingError(f"{path} is not valid UTF-8: {error}") from error
+    return parse_design_md(text)
+
+
+def _read_design_file(
+    design_file: DiscoveredDesignFile,
+) -> tuple[bytes, ParsedDesignSystem]:
+    """Read one design file, mapping a missing source to a domain error."""
+    try:
+        content = design_file.path.read_bytes()
+    except (FileNotFoundError, IsADirectoryError) as error:
+        raise MissingSourceFileError(
+            f"source file for design system '{design_file.slug}' is missing: "
+            f"{design_file.path}"
+        ) from error
+    return content, _parse_design_content(design_file.path, content)
+
+
 def _parse_design_file(
     repo_root: Path, design_file: DiscoveredDesignFile
 ) -> _ParsedDesignFile:
     """Read, digest, and parse one discovered file without database access."""
-    with design_file.path.open("rb") as file_handle:
-        content = file_handle.read()
-        stat = os.fstat(file_handle.fileno())
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise InvalidEncodingError(
-            f"{design_file.path} is not valid UTF-8: {error}"
-        ) from error
-    parsed = parse_design_md(text)
+    content, parsed = _read_design_file(design_file)
+    stat = design_file.path.stat()
     return _ParsedDesignFile(
         slug=design_file.slug,
         source_path=design_file.path.relative_to(repo_root).as_posix(),
@@ -104,6 +132,28 @@ async def _persist_design_files(
         return systems
 
 
+def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
+    """Write bytes to a file atomically via a same-directory temporary file.
+
+    A partial write must never corrupt a Git-tracked DESIGN.md file, so the
+    replacement is prepared beside the target and swapped in with rename.
+    Returns the post-replacement file metadata for sync bookkeeping.
+    """
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+        shutil.copymode(path, temp_path)
+        os.replace(temp_path, path)
+        return path.stat()
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
 class DesignSystemService:
     """Design system service class."""
 
@@ -122,6 +172,60 @@ class DesignSystemService:
         ]
 
         return await _persist_design_files(parsed_files)
+
+    @staticmethod
+    async def apply_token_patch(
+        *,
+        repo_root: Path,
+        slug: str,
+        token_patches: Mapping[str, str],
+    ) -> DesignSystem:
+        """
+        Patch token values in a DESIGN.md file and write the change through to storage
+
+        The file is the recovery source of truth, so the on-disk document is
+        patched in-place first and the database is committed afterwards; a
+        database failure leaves the file ahead for change detection to re-index.
+
+        :param repo_root: Repository root path
+        :param slug: Design system slug
+        :param token_patches: Mapping of token paths to new values
+        :return:
+        """
+        root = Path(repo_root).resolve()
+        async with db.async_db_session() as session:
+            system = await design_system_dao.get_by_slug(session, slug)
+        if system is None:
+            raise UnknownDesignSystemError(f"design system not found: {slug}")
+        if system.source_path is None:
+            raise UnbackedDesignSystemError(
+                f"design system '{slug}' has no linked DESIGN.md file; "
+                f"token patches require a file-backed system"
+            )
+
+        source_path = root / system.source_path
+        source = DiscoveredDesignFile(slug=slug, path=source_path)
+        _, current = await asyncio.to_thread(_read_design_file, source)
+        patched_text = serialize_design_md(
+            front_matter_raw=current.front_matter_raw,
+            closing_fence=current.closing_fence,
+            guide_markdown=current.guide_markdown,
+            eol=current.eol,
+            token_patches=token_patches,
+        )
+
+        patched_bytes = patched_text.encode("utf-8")
+        stat = await asyncio.to_thread(_atomic_write_bytes, source_path, patched_bytes)
+        written = _ParsedDesignFile(
+            slug=slug,
+            source_path=system.source_path,
+            source_digest=hashlib.sha256(patched_bytes).hexdigest(),
+            source_mtime_ns=stat.st_mtime_ns,
+            source_size=len(patched_bytes),
+            parsed=_parse_design_content(source_path, patched_bytes),
+        )
+        persisted = await _persist_design_files([written])
+        return persisted[0]
 
 
 design_system_service: DesignSystemService = DesignSystemService()

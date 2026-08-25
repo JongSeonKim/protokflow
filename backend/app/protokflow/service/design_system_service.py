@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from backend.app.protokflow.core.design_md import (
     ParsedDesignSystem,
     parse_design_md,
@@ -152,16 +154,41 @@ async def _persist_design_files(
     async with db.async_db_session.begin() as session:
         systems: list[DesignSystem] = []
         for parsed_file in parsed_files:
-            design_system = await design_system_dao.upsert(
-                session, _build_design_system(parsed_file)
-            )
-            await design_token_dao.replace(
-                session,
-                design_system.id,
-                _build_design_tokens(parsed_file, design_system.id),
-            )
-            systems.append(design_system)
+            systems.append(await _upsert_parsed_file(session, parsed_file))
         return systems
+
+
+async def _persist_token_patch(written: _ParsedDesignFile) -> DesignSystem:
+    """Persist one patched file without reviving a row deleted mid-patch.
+
+    The slug's row is re-checked inside the write transaction: the file has
+    already been patched by then, and re-creating a deleted row would silently
+    undo a deletion. The patched file stays ahead of the database (KTD9) and
+    the next index run re-imports it if the file is still present.
+    """
+    async with db.async_db_session.begin() as session:
+        if await design_system_dao.get_by_slug(session, written.slug) is None:
+            raise UnknownDesignSystemError(
+                f"design system '{written.slug}' was deleted while its source "
+                f"file was being patched; the patched file stays ahead and the "
+                f"next index run will re-import it"
+            )
+        return await _upsert_parsed_file(session, written)
+
+
+async def _upsert_parsed_file(
+    session: AsyncSession, parsed_file: _ParsedDesignFile
+) -> DesignSystem:
+    """Upsert one parsed file and replace its tokens on the caller's session."""
+    design_system = await design_system_dao.upsert(
+        session, _build_design_system(parsed_file)
+    )
+    await design_token_dao.replace(
+        session,
+        design_system.id,
+        _build_design_tokens(parsed_file, design_system.id),
+    )
+    return design_system
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -397,8 +424,7 @@ class DesignSystemService:
                 current,
                 token_patches,
             )
-            persisted = await _persist_design_files([written])
-            return persisted[0]
+            return await _persist_token_patch(written)
 
 
 design_system_service: DesignSystemService = DesignSystemService()

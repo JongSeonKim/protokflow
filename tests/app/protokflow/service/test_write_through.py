@@ -244,6 +244,42 @@ async def test_pre_commit_failure_leaves_file_ahead_of_database(
     assert system.source_digest != hashlib.sha256(patched).hexdigest()
 
 
+async def test_row_deleted_mid_patch_is_not_revived(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+    system_id = (await _system_by_slug("default")).id
+
+    real_to_thread = asyncio.to_thread
+
+    async def to_thread_that_deletes_row(
+        func: object, /, *args: object, **kwargs: object
+    ):
+        if func is service_module._patch_and_write:
+            async with db.async_db_session.begin() as session:
+                await design_system_dao.delete_model_by_column(session, slug="default")
+        return await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(service_module.asyncio, "to_thread", to_thread_that_deletes_row)
+
+    with pytest.raises(UnknownDesignSystemError, match="deleted while"):
+        await design_system_service.apply_token_patch(
+            repo_root=tmp_path,
+            slug="default",
+            token_patches={"colors.primary": "#0B0E14"},
+        )
+
+    assert b"#0B0E14" in design_md_path.read_bytes()
+    async with db.async_db_session() as session:
+        assert await design_system_dao.get_by_slug(session, "default") is None
+        assert list(await design_token_dao.get_all(session, system_id)) == []
+
+
 async def test_unknown_slug_raises_domain_error(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:

@@ -13,6 +13,7 @@ from backend.app.protokflow.core.designmd import (
 )
 from backend.app.protokflow.core.errors import (
     FencedYamlBlockError,
+    MixedLineEndingsError,
     UnknownTokenPathError,
     UnterminatedFrontMatterError,
     YamlAnchorError,
@@ -40,7 +41,9 @@ def _parse_fixture(name: str) -> ParsedDesignSystem:
 def _serialize(parsed: ParsedDesignSystem) -> str:
     return serialize_design_md(
         front_matter_raw=parsed.front_matter_raw,
+        closing_fence=parsed.closing_fence,
         guide_markdown=parsed.guide_markdown,
+        eol=parsed.eol,
     )
 
 
@@ -58,7 +61,7 @@ def test_no_front_matter_yields_zero_tokens_and_markdown_body() -> None:
     parsed = parse_design_md(original)
 
     assert parsed.tokens == []
-    assert parsed.front_matter_raw == ""
+    assert parsed.front_matter_raw is None
     assert parsed.guide_markdown == original
     assert parsed.title is None
     assert parsed.description is None
@@ -71,6 +74,116 @@ def test_no_front_matter_round_trip_is_byte_identical() -> None:
     parsed = parse_design_md(original)
 
     assert _serialize(parsed) == original
+
+
+def test_present_but_empty_front_matter_round_trips() -> None:
+    text = "---\n---\n# Guide\n"
+
+    parsed = parse_design_md(text)
+
+    assert parsed.front_matter_raw == ""
+    assert parsed.tokens == []
+    assert _serialize(parsed) == text
+
+
+def test_whitespace_only_front_matter_round_trips() -> None:
+    text = "---\n\n  \n---\n# Guide\n"
+
+    parsed = parse_design_md(text)
+
+    assert parsed.tokens == []
+    assert _serialize(parsed) == text
+
+
+def test_comment_only_front_matter_round_trips() -> None:
+    text = "---\n# only a comment\n---\n# Guide\n"
+
+    parsed = parse_design_md(text)
+
+    assert parsed.tokens == []
+    assert parsed.front_matter_extras == {}
+    assert _serialize(parsed) == text
+
+
+def test_crlf_document_round_trips_byte_identically() -> None:
+    original = _read_fixture("team-authored.md").replace("\n", "\r\n")
+
+    parsed = parse_design_md(original)
+
+    assert parsed.eol == "\r\n"
+    assert _serialize(parsed) == original
+
+
+def test_crlf_patch_changes_exactly_one_line() -> None:
+    original = _read_fixture("team-authored.md").replace("\n", "\r\n")
+    parsed = parse_design_md(original)
+
+    patched = serialize_design_md(
+        front_matter_raw=parsed.front_matter_raw,
+        closing_fence=parsed.closing_fence,
+        guide_markdown=parsed.guide_markdown,
+        eol=parsed.eol,
+        token_patches={"colors.primary": "#3AA6B9"},
+    )
+
+    original_lines = original.splitlines(keepends=True)
+    patched_lines = patched.splitlines(keepends=True)
+    assert len(original_lines) == len(patched_lines), "patch must not change line count"
+    changed = [
+        (left, right)
+        for left, right in zip(original_lines, patched_lines, strict=True)
+        if left != right
+    ]
+    assert len(changed) == 1
+    assert "#3AA6B9" in changed[0][1]
+
+
+def test_missing_final_newline_after_closing_fence_round_trips() -> None:
+    text = "---\ncolors:\n  primary: '#111111'\n---"
+
+    parsed = parse_design_md(text)
+
+    assert parsed.closing_fence == "---"
+    assert _serialize(parsed) == text
+
+
+def test_patches_on_front_matter_less_document_raise() -> None:
+    with pytest.raises(UnknownTokenPathError, match="colors.primary"):
+        serialize_design_md(
+            front_matter_raw=None,
+            closing_fence="",
+            guide_markdown="# Guide\n",
+            eol="\n",
+            token_patches={"colors.primary": "#FFFFFF"},
+        )
+
+
+def test_patches_on_empty_front_matter_raise() -> None:
+    with pytest.raises(UnknownTokenPathError, match="colors.primary"):
+        serialize_design_md(
+            front_matter_raw="",
+            closing_fence="---\n",
+            guide_markdown="# Guide\n",
+            eol="\n",
+            token_patches={"colors.primary": "#FFFFFF"},
+        )
+
+
+def test_mixed_line_endings_are_rejected_at_parse() -> None:
+    text = "---\nname: Mixed\r\n---\n# Guide\n"
+
+    with pytest.raises(MixedLineEndingsError):
+        parse_design_md(text)
+
+
+def test_serialize_rejects_output_with_mixed_line_endings() -> None:
+    with pytest.raises(MixedLineEndingsError):
+        serialize_design_md(
+            front_matter_raw="name: Mixed\r\n",
+            closing_fence="---\n",
+            guide_markdown="# Guide\n",
+            eol="\n",
+        )
 
 
 @pytest.mark.parametrize("front_matter", [True, False])
@@ -151,7 +264,9 @@ def test_patching_one_token_changes_exactly_one_line() -> None:
 
     patched = serialize_design_md(
         front_matter_raw=parsed.front_matter_raw,
+        closing_fence=parsed.closing_fence,
         guide_markdown=parsed.guide_markdown,
+        eol=parsed.eol,
         token_patches={"colors.primary": "#3AA6B9"},
     )
 
@@ -173,7 +288,9 @@ def test_patching_preserves_quoted_style_of_the_patched_line() -> None:
 
     patched = serialize_design_md(
         front_matter_raw=parsed.front_matter_raw,
+        closing_fence=parsed.closing_fence,
         guide_markdown=parsed.guide_markdown,
+        eol=parsed.eol,
         token_patches={"typography.body-md.fontWeight": "500"},
     )
 
@@ -189,7 +306,9 @@ def test_patching_unknown_token_path_raises_clear_error() -> None:
     with pytest.raises(UnknownTokenPathError):
         serialize_design_md(
             front_matter_raw=parsed.front_matter_raw,
+            closing_fence=parsed.closing_fence,
             guide_markdown=parsed.guide_markdown,
+            eol=parsed.eol,
             token_patches={"colors.nonexistent": "#000000"},
         )
 

@@ -30,3 +30,11 @@ class UnterminatedFrontMatterError(DesignMdError):
 
 class UnknownTokenPathError(DesignMdError):
     """A patch references a token path absent from the front matter."""
+
+
+class MixedLineEndingsError(DesignMdError):
+    """Document mixes LF and CRLF line endings, or uses bare CR.
+
+    One line-ending style per document is required so re-emission stays
+    byte-faithful instead of silently rewriting every line.
+    """

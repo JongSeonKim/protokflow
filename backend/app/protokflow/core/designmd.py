@@ -20,6 +20,7 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScala
 
 from backend.app.protokflow.core.errors import (
     FencedYamlBlockError,
+    MixedLineEndingsError,
     UnknownTokenPathError,
     UnterminatedFrontMatterError,
     YamlAnchorError,
@@ -51,8 +52,10 @@ class TokenRow:
 class ParsedDesignSystem:
     """Everything the storage layer needs from one DESIGN.md file."""
 
-    front_matter_raw: str  # verbatim text between the fences
+    front_matter_raw: str | None  # None = no front matter block
+    closing_fence: str  # exact closing fence line including its line ending
     guide_markdown: str  # verbatim body after the closing fence
+    eol: str  # document line ending: "\n" or "\r\n"
     title: str | None  # front matter 'name'
     description: str | None
     spec_version: str | None  # front matter 'version'
@@ -68,14 +71,49 @@ def _yaml() -> YAML:
     return yaml
 
 
-def split_front_matter(text: str) -> tuple[str, str]:
-    """Return (front_matter_raw, guide_markdown); fences are excluded."""
+@dataclass(frozen=True, slots=True)
+class FrontMatterSplit:
+    """Verbatim envelope pieces of a split DESIGN.md document."""
+
+    front_matter_raw: str | None  # None = no front matter block
+    closing_fence: str
+    guide_markdown: str
+    eol: str
+
+
+def _reject_mixed_line_endings(text: str) -> None:
+    saw_lf = False
+    saw_crlf = False
+    for line in text.splitlines(keepends=True):
+        if line.endswith("\r\n"):
+            saw_crlf = True
+        elif line.endswith("\n"):
+            saw_lf = True
+        elif line.endswith("\r"):
+            raise MixedLineEndingsError(
+                "bare CR line endings are not supported; use LF or CRLF throughout"
+            )
+    if saw_lf and saw_crlf:
+        raise MixedLineEndingsError(
+            "document mixes LF and CRLF line endings; use one style throughout"
+        )
+
+
+def split_front_matter(text: str) -> FrontMatterSplit:
+    """Split a document into verbatim envelope pieces; fences are excluded."""
+    _reject_mixed_line_endings(text)
+    eol = "\r\n" if "\r\n" in text else "\n"
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].rstrip("\r\n") != FENCE:
-        return "", text
+        return FrontMatterSplit(None, "", text, eol)
     for index in range(1, len(lines)):
         if lines[index].rstrip("\r\n") == FENCE:
-            return "".join(lines[1:index]), "".join(lines[index + 1 :])
+            return FrontMatterSplit(
+                front_matter_raw="".join(lines[1:index]),
+                closing_fence=lines[index],
+                guide_markdown="".join(lines[index + 1 :]),
+                eol=eol,
+            )
     raise UnterminatedFrontMatterError(
         "opening '---' front matter fence has no closing '---'"
     )
@@ -84,7 +122,12 @@ def split_front_matter(text: str) -> tuple[str, str]:
 def _load_front_matter(raw: str) -> CommentedMap:
     if not raw.strip():
         return CommentedMap()
-    loaded = _yaml().load(io.StringIO(raw))
+    # Normalize CRLF before loading: ruamel's round-trip dump drops some
+    # EOL blank lines when the input uses CRLF. The raw text is preserved
+    # separately, so this only affects the in-memory tree.
+    loaded = _yaml().load(io.StringIO(raw.replace("\r\n", "\n")))
+    if loaded is None:
+        return CommentedMap()
     if not isinstance(loaded, CommentedMap):
         raise ValueError("front matter must be a YAML mapping of top-level keys")
     return loaded
@@ -159,9 +202,9 @@ def _optional_text(front_matter: CommentedMap, key: str) -> str | None:
 
 def parse_design_md(text: str) -> ParsedDesignSystem:
     """Parse a DESIGN.md file, rejecting anchors and fenced yaml blocks."""
-    front_matter_raw, guide_markdown = split_front_matter(text)
-    _reject_fenced_yaml_blocks(guide_markdown)
-    front_matter = _load_front_matter(front_matter_raw)
+    split = split_front_matter(text)
+    _reject_fenced_yaml_blocks(split.guide_markdown)
+    front_matter = _load_front_matter(split.front_matter_raw or "")
     _reject_anchors(front_matter)
 
     tokens: list[TokenRow] = []
@@ -175,8 +218,10 @@ def parse_design_md(text: str) -> ParsedDesignSystem:
     extras = {key: value for key, value in front_matter.items() if key not in known}
 
     return ParsedDesignSystem(
-        front_matter_raw=front_matter_raw,
-        guide_markdown=guide_markdown,
+        front_matter_raw=split.front_matter_raw,
+        closing_fence=split.closing_fence,
+        guide_markdown=split.guide_markdown,
+        eol=split.eol,
         title=_optional_text(front_matter, "name"),
         description=_optional_text(front_matter, "description"),
         spec_version=_optional_text(front_matter, "version"),
@@ -205,16 +250,35 @@ def _set_token(front_matter: CommentedMap, token_path: str, value: str) -> None:
 
 def serialize_design_md(
     *,
-    front_matter_raw: str,
+    front_matter_raw: str | None,
+    closing_fence: str,
     guide_markdown: str,
+    eol: str,
     token_patches: Mapping[str, str] | None = None,
 ) -> str:
     """Re-emit a DESIGN.md file, patching only the requested token paths."""
-    if not front_matter_raw.strip():
-        return guide_markdown
-    front_matter = _load_front_matter(front_matter_raw)
-    for token_path, value in (token_patches or {}).items():
-        _set_token(front_matter, token_path, value)
-    buffer = io.StringIO()
-    _yaml().dump(front_matter, buffer)
-    return f"{FENCE}\n{buffer.getvalue()}{FENCE}\n{guide_markdown}"
+    if eol not in ("\n", "\r\n"):
+        raise MixedLineEndingsError("line ending must be LF or CRLF")
+    patches = token_patches or {}
+    if front_matter_raw is None:
+        if patches:
+            raise UnknownTokenPathError(
+                f"token path not in front matter: {next(iter(patches))}"
+            )
+        output = guide_markdown
+    else:
+        front_matter = _load_front_matter(front_matter_raw)
+        for token_path, value in patches.items():
+            _set_token(front_matter, token_path, value)
+        if patches:
+            buffer = io.StringIO()
+            _yaml().dump(front_matter, buffer)
+            dumped = buffer.getvalue()
+            if eol == "\r\n":
+                dumped = dumped.replace("\n", "\r\n")
+        else:
+            # An unedited document re-emits its preserved front matter verbatim.
+            dumped = front_matter_raw
+        output = f"{FENCE}{eol}{dumped}{closing_fence}{guide_markdown}"
+    _reject_mixed_line_endings(output)
+    return output

@@ -69,6 +69,8 @@ async def _persist_design_files(
     parsed_files: list[_ParsedDesignFile],
 ) -> list[DesignSystem]:
     """Upsert systems and replace their tokens in one caller-visible transaction."""
+    if not parsed_files:
+        return []
     async with db.async_db_session.begin() as session:
         systems: list[DesignSystem] = []
         for parsed_file in parsed_files:

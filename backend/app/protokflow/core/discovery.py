@@ -25,12 +25,14 @@ def discover_design_files(repo_root: Path) -> list[DiscoveredDesignFile]:
 
     design_dir = root / "design"
     if design_dir.is_dir():
+        markdown_files = [
+            path
+            for path in design_dir.iterdir()
+            if path.is_file() and path.suffix == ".md"
+        ]
         discovered.extend(
             DiscoveredDesignFile(slug=path.stem, path=path)
-            for path in sorted(
-                design_dir.iterdir(), key=lambda candidate: candidate.name
-            )
-            if path.is_file() and path.suffix == ".md"
+            for path in sorted(markdown_files, key=lambda candidate: candidate.name)
         )
 
     return discovered

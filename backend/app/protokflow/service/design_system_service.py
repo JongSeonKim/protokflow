@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import shutil
@@ -10,6 +11,8 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.core.design_md import (
     ParsedDesignSystem,
@@ -21,19 +24,21 @@ from backend.app.protokflow.core.discovery import (
     DiscoveredDesignFile,
     discover_design_files,
 )
-from backend.app.protokflow.core.errors import (
+from backend.app.protokflow.error.design_md import InvalidEncodingError
+from backend.app.protokflow.crud.crud_design_system import design_system_dao
+from backend.app.protokflow.crud.crud_design_token import design_token_dao
+from backend.app.protokflow.model import DesignSystem, DesignToken
+from backend.app.protokflow.model.types import utcnow
+from backend.app.protokflow.error.storage import (
     ConcurrentModificationError,
-    InvalidEncodingError,
     MissingSourceFileError,
+    SourceRootMismatchError,
+    SourceWriteError,
     TokenReparentingError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
     UnsupportedSourceLinkError,
 )
-from backend.app.protokflow.crud.crud_design_system import design_system_dao
-from backend.app.protokflow.crud.crud_design_token import design_token_dao
-from backend.app.protokflow.model import DesignSystem, DesignToken
-from backend.app.protokflow.model.types import utcnow
 from backend.database import db
 
 
@@ -42,6 +47,7 @@ class _ParsedDesignFile:
     """Parsed source data prepared before opening the database transaction."""
 
     slug: str
+    source_root: str
     source_path: str
     source_digest: str
     source_mtime_ns: int
@@ -88,6 +94,7 @@ def _parse_design_file(
     content, stat, parsed = _read_design_file(design_file)
     return _ParsedDesignFile(
         slug=design_file.slug,
+        source_root=repo_root.as_posix(),
         source_path=design_file.path.relative_to(repo_root).as_posix(),
         source_digest=hashlib.sha256(content).hexdigest(),
         source_mtime_ns=stat.st_mtime_ns,
@@ -107,6 +114,7 @@ def _build_design_system(parsed_file: _ParsedDesignFile) -> DesignSystem:
         front_matter_extras=parsed.front_matter_extras,
         front_matter_raw=parsed.front_matter_raw or "",
         guide_markdown=parsed.guide_markdown,
+        source_root=parsed_file.source_root,
         source_path=parsed_file.source_path,
         source_digest=parsed_file.source_digest,
         source_mtime_ns=parsed_file.source_mtime_ns,
@@ -146,16 +154,41 @@ async def _persist_design_files(
     async with db.async_db_session.begin() as session:
         systems: list[DesignSystem] = []
         for parsed_file in parsed_files:
-            design_system = await design_system_dao.upsert(
-                session, _build_design_system(parsed_file)
-            )
-            await design_token_dao.replace(
-                session,
-                design_system.id,
-                _build_design_tokens(parsed_file, design_system.id),
-            )
-            systems.append(design_system)
+            systems.append(await _upsert_parsed_file(session, parsed_file))
         return systems
+
+
+async def _persist_token_patch(written: _ParsedDesignFile) -> DesignSystem:
+    """Persist one patched file without reviving a row deleted mid-patch.
+
+    The slug's row is re-checked inside the write transaction: the file has
+    already been patched by then, and re-creating a deleted row would silently
+    undo a deletion. The patched file stays ahead of the database (KTD9) and
+    the next index run re-imports it if the file is still present.
+    """
+    async with db.async_db_session.begin() as session:
+        if await design_system_dao.get_by_slug(session, written.slug) is None:
+            raise UnknownDesignSystemError(
+                f"design system '{written.slug}' was deleted while its source "
+                f"file was being patched; the patched file stays ahead and the "
+                f"next index run will re-import it"
+            )
+        return await _upsert_parsed_file(session, written)
+
+
+async def _upsert_parsed_file(
+    session: AsyncSession, parsed_file: _ParsedDesignFile
+) -> DesignSystem:
+    """Upsert one parsed file and replace its tokens on the caller's session."""
+    design_system = await design_system_dao.upsert(
+        session, _build_design_system(parsed_file)
+    )
+    await design_token_dao.replace(
+        session,
+        design_system.id,
+        _build_design_tokens(parsed_file, design_system.id),
+    )
+    return design_system
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -184,19 +217,37 @@ def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
     to disk around the rename operation.
 
     Symlinks and hard links are rejected before writing to prevent breaking link
-    targets during directory entry replacement.
+    targets during directory entry replacement. Disk failures raise
+    SourceWriteError with the original OSError as __cause__ so callers only
+    need to handle the storage-layer exception hierarchy.
 
     Returns the stat result from the temporary file descriptor before replacement,
     capturing the exact metadata of the written bytes.
     """
-    if os.path.islink(path) or os.lstat(path).st_nlink > 1:
+    try:
+        stat_result = os.lstat(path)
+    except FileNotFoundError as error:
+        raise MissingSourceFileError(
+            f"source file for design system is missing: {path}"
+        ) from error
+    except OSError as error:
+        raise SourceWriteError(
+            f"failed to inspect DESIGN.md source before atomic write: {path}: {error}"
+        ) from error
+    if os.path.islink(path) or stat_result.st_nlink > 1:
         raise UnsupportedSourceLinkError(
             f"DESIGN.md source is a symlink or hard link and cannot be "
             f"atomically replaced: {path}"
         )
-    descriptor, temp_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
+    try:
+        descriptor, temp_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
+    except OSError as error:
+        raise SourceWriteError(
+            f"failed to create a temporary file beside DESIGN.md source: "
+            f"{path}: {error}"
+        ) from error
     temp_path = Path(temp_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -208,8 +259,13 @@ def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
         os.replace(temp_path, path)
         _fsync_directory(path.parent)
         return stat
-    except BaseException:
-        temp_path.unlink(missing_ok=True)
+    except BaseException as error:
+        with contextlib.suppress(OSError):
+            temp_path.unlink(missing_ok=True)
+        if isinstance(error, OSError):
+            raise SourceWriteError(
+                f"failed to atomically write DESIGN.md source: {path}: {error}"
+            ) from error
         raise
 
 
@@ -239,6 +295,7 @@ def _patched_parse(
 
 def _patch_and_write(
     slug: str,
+    source_root: str,
     source_path_value: str,
     source_path: Path,
     current: ParsedDesignSystem,
@@ -262,6 +319,7 @@ def _patch_and_write(
     stat = _atomic_write_bytes(source_path, patched_bytes)
     return _ParsedDesignFile(
         slug=slug,
+        source_root=source_root,
         source_path=source_path_value,
         source_digest=digest,
         source_mtime_ns=stat.st_mtime_ns,
@@ -312,6 +370,8 @@ class DesignSystemService:
         The file is the recovery source of truth, so the on-disk document is
         patched in-place first and the database is committed afterwards; a
         database failure leaves the file ahead for change detection to re-index.
+        The resolved repo_root must match the root recorded at index time;
+        otherwise the patch is rejected with SourceRootMismatchError.
 
         :param repo_root: Repository root path
         :param slug: Design system slug
@@ -337,6 +397,12 @@ class DesignSystemService:
                     f"design system '{slug}' has no linked DESIGN.md file; "
                     f"token patches require a file-backed system"
                 )
+            if system.source_root is None or system.source_root != root.as_posix():
+                raise SourceRootMismatchError(
+                    f"design system '{slug}' was indexed from repository root "
+                    f"'{system.source_root}' but the patch targets "
+                    f"'{root.as_posix()}'; re-index against this root to rebind it"
+                )
 
             source_path = root / system.source_path
             source = DiscoveredDesignFile(slug=slug, path=source_path)
@@ -352,13 +418,13 @@ class DesignSystemService:
             written = await asyncio.to_thread(
                 _patch_and_write,
                 slug,
+                root.as_posix(),
                 system.source_path,
                 source_path,
                 current,
                 token_patches,
             )
-            persisted = await _persist_design_files([written])
-            return persisted[0]
+            return await _persist_token_patch(written)
 
 
 design_system_service: DesignSystemService = DesignSystemService()

@@ -55,6 +55,7 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
         existing.front_matter_raw = obj.front_matter_raw
         existing.guide_markdown = obj.guide_markdown
         existing.source_path = obj.source_path
+        existing.source_root = obj.source_root
         existing.source_digest = obj.source_digest
         existing.source_mtime_ns = obj.source_mtime_ns
         existing.source_size = obj.source_size

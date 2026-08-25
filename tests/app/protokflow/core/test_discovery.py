@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from backend.app.protokflow.core import discovery
-from backend.app.protokflow.core.errors import DuplicateSlugError
+from backend.app.protokflow.error.design_md import DuplicateSlugError
 
 
 def test_discovery_is_storage_and_transport_free() -> None:

@@ -10,10 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.core.design_md import parse_design_md
-from backend.app.protokflow.core.errors import (
+from backend.app.protokflow.error.design_md import (
     FencedYamlBlockError,
     InvalidEncodingError,
-    TokenReparentingError,
     YamlAnchorError,
 )
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
@@ -24,6 +23,7 @@ from backend.app.protokflow.service.design_system_service import (
     _build_design_tokens,
     design_system_service,
 )
+from backend.app.protokflow.error.storage import TokenReparentingError
 from backend.database import db
 
 
@@ -257,6 +257,7 @@ async def test_indexing_rolls_back_all_systems_when_persistence_fails(
 def test_build_design_tokens_builds_tokens_matching_design_system_id() -> None:
     parsed_file = _ParsedDesignFile(
         slug="default",
+        source_root="/repo",
         source_path="DESIGN.md",
         source_digest="abc",
         source_mtime_ns=0,
@@ -275,6 +276,7 @@ def test_build_design_tokens_rejects_mismatched_reparenting(
 ) -> None:
     parsed_file = _ParsedDesignFile(
         slug="default",
+        source_root="/repo",
         source_path="DESIGN.md",
         source_digest="abc",
         source_mtime_ns=0,

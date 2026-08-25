@@ -283,6 +283,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - `backend/app/protokflow/core/__init__.py`
 - `backend/app/protokflow/core/design_md.py`
 - `backend/app/protokflow/core/errors.py` — 앵커·fenced YAML 블록 거부 예외
+- `backend/app/protokflow/error/design_md.py` — 앵커·fenced YAML 블록 거부 예외 (모든 도메인 예외는 `error/` 패키지에 위치)
 - `tests/app/protokflow/core/test_design_md.py`
 - `tests/fixtures/design_md/` — 픽스처 6종(무손실 왕복 4종, Front Matter 부재 1종, 거부 검증 1종)
 
@@ -439,7 +440,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - `backend/app/protokflow/service/reconcile.py`
 - `backend/app/protokflow/service/design_system_service.py` — 조회 진입점 추가, 진입점에 선검사 삽입, `index_all` 고아 삭제
 - `backend/app/protokflow/crud/crud_design_system.py` — 고아 행 삭제 쿼리
-- `backend/app/protokflow/core/errors.py` — `MissingSourceFileError` 추가
+- `backend/app/protokflow/error/storage.py` — `MissingSourceFileError` 추가. 저장소 계층 예외는 이슈 #20 분리 결과로 이 모듈에 위치한다.
 - `tests/app/protokflow/service/test_reconcile.py`
 - `tests/app/protokflow/service/test_write_through.py` — 동시 수정 가드 및 재조정 검증 테스트
 

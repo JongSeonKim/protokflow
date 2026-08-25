@@ -37,7 +37,10 @@ class DesignToken(Base):
         init=False,
         default_factory=new_ulid,
         sort_order=-999,
-        comment="ULID primary key",
+        comment=(
+            "ULID primary key; re-issued on every token sync. Stable identity"
+            " is (design_system_id, token_path); never reference as a FK"
+        ),
     )
     design_system_id: Mapped[str] = mapped_column(
         Ulid(), comment="Owning design system"

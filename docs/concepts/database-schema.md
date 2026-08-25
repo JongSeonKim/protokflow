@@ -141,7 +141,8 @@ CREATE TABLE design_systems (
   front_matter_extras JSON  NOT NULL DEFAULT '{}', -- 모델링하지 않은 최상위 키 원문 보존
   front_matter_raw TEXT     NOT NULL DEFAULT '',  -- Front Matter 원문(주석·정렬·따옴표 포함)
   guide_markdown  TEXT      NOT NULL DEFAULT '',  -- DESIGN.md 본문(Front Matter 제외)
-  source_path     TEXT,                           -- 대응하는 DESIGN.md 파일 경로
+  source_path     TEXT,                           -- DESIGN.md 경로 (source_root 기준 상대경로)
+  source_root     TEXT,                           -- 인덱싱 당시 루트의 절대경로 (resolved)
   source_digest   TEXT,                           -- 마지막 동기화 시점 파일의 sha256
   source_mtime_ns INTEGER,                        -- mtime 나노초 정수 (선검사용)
   source_size     INTEGER,                        -- 크기  (선검사용)
@@ -155,6 +156,7 @@ CREATE TABLE design_systems (
 - **`front_matter_raw`는 in-place 패치 write-through의 기반이다.** Front Matter 원문을 주석, 빈 줄, 따옴표 스타일, 키 순서까지 바이트 단위로 보존한다. 저장 시 이 원문을 라운드트립 파서로 읽어 대상 토큰 위치만 치환하므로 Git diff 최소화(단일 토큰 변경 시 1줄 diff) 및 사용자 서식 보존을 보장한다. 정규화된 행 기반 직렬화 재생성 방식과 달리 불필요한 diff 노이즈를 차단한다. 파일 미연동 시스템은 생성 시점에 1회 직렬화하여 이 컬럼을 초기화한다.
 - `guide_markdown`은 `design://systems/{slug}` 리소스로 반환되어 에이전트의 프롬프트 컨텍스트가 된다.
 - `source_path`가 NULL인 디자인 시스템은 **DB 전용**(파일 미연동)이다. 파생 디자인 시스템은 기본적으로 DB 전용으로 생성되어 Git 트리를 오염시키지 않으며, 필요 시 명시적 export를 통해 `design/{slug}.md` 파일로 변환된다.
+- **`source_path`는 `source_root` 기준 상대경로이다.** 인덱싱 시점의 루트 절대경로(resolved)를 `source_root`에 기록하며, 토큰 패치는 호출자가 넘긴 `repo_root`의 resolved 값이 이와 일치할 때만 파일을 해석한다. 불일치(`NULL` 포함) 시 `SourceRootMismatchError`로 거부하고 재인덱싱으로 재바인딩한다 — 여러 체크아웃·워크트리를 오가며 같은 상대경로의 무관한 파일을 패치하는 사고를 막기 위한 계약이다.
 - `derived_from_id`는 **출처(provenance) 추적용 메타데이터**이다. 파생 시스템도 완전 해석된 자기완결 토큰 트리를 가지며, `promote_tokens`의 원본 병합 대상 식별 및 `/admin` UI의 diff 표시에 사용된다.
 - `source_mtime_ns`/`source_size`는 도구 호출 시 파일 변경 여부를 저비용(`stat`)으로 선검사하여 해시 계산 오버헤드를 회피하는 용도이다(§6). mtime은 부동소수점 초가 아닌 나노초 정수(`st_mtime_ns`)로 저장한다 — 검증 결과 APFS는 1ns 단위까지 정확히 저장하며 SQLite `INTEGER`는 무손실 왕복하지만, 초 단위 `REAL`(float64)은 현재 epoch에서 최소 가시 간격(ULP)이 약 238ns여서 그보다 작은 시간 간격의 변경을 식별하지 못한다.
 
@@ -200,6 +202,7 @@ CREATE INDEX ix_design_tokens_ds_tier ON design_tokens (design_system_id, tier);
 ```
 
 - **행 단위 정규화**: 개별 토큰 PATCH 시의 경합을 제거하고, `UNIQUE(design_system_id, token_path)`로 경로 중복을 방지하며, 시스템 간 diff 조회를 단순화한다.
+- **`id`는 불안정하다 — 토큰의 안정 식별자는 `(design_system_id, token_path)`다.** 토큰 동기화(`design_token_dao.replace`)는 해당 시스템의 토큰 행을 전량 삭제 후 재삽입하므로 모든 `id`가 동기화마다 새로 발급된다. 어떤 테이블도 `design_tokens.id`를 외래키로 참조하지 않는 것이 계약이다. 토큰 단위 소비자(주석·오버라이드·이력, 파생 시스템의 상위 토큰 참조 등)는 항상 `(design_system_id, token_path)` 복합키로 토큰을 지칭한다.
 - **원문 값 보존**: `{colors.primary}` 참조의 해석 및 순환 참조 검출은 코어 엔진(`protokflow.core`)의 캐스케이드 해석기 책임이며(R1), DB는 원문 문자열을 그대로 저장한다.
 - `tier`는 계층별 조회(`:root` CSS 변수 생성 시 foundation 우선 정렬 등)를 지원하기 위한 인덱싱 컬럼이다.
 

@@ -33,3 +33,11 @@ class UnsupportedSourceLinkError(StorageLayerError):
     Atomic file replacement via rename modifies directory entries directly,
     which would replace symlinks with regular files or break hard links.
     """
+
+
+class SourceWriteError(StorageLayerError):
+    """Raised when a disk failure prevents the atomic write of a DESIGN.md source.
+
+    The original OSError is preserved as __cause__ so callers can inspect the
+    underlying errno while adapters only need to catch StorageLayerError.
+    """

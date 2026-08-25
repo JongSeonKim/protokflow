@@ -22,6 +22,7 @@ from backend.app.protokflow.service.design_system_service import design_system_s
 from backend.app.protokflow.service.errors import (
     ConcurrentModificationError,
     MissingSourceFileError,
+    SourceWriteError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
     UnsupportedSourceLinkError,
@@ -196,13 +197,14 @@ async def test_failed_file_write_preserves_original_file_and_database(
 
     monkeypatch.setattr(os, "replace", fail_replace)
 
-    with pytest.raises(OSError, match="simulated disk failure"):
+    with pytest.raises(SourceWriteError, match="simulated disk failure") as excinfo:
         await design_system_service.apply_token_patch(
             repo_root=tmp_path,
             slug="default",
             token_patches={"colors.primary": "#0B0E14"},
         )
 
+    assert isinstance(excinfo.value.__cause__, OSError)
     assert design_md_path.read_bytes() == original
     assert (await _token_rows(system.id))["colors.primary"] == "#111111"
     assert list(tmp_path.iterdir()) == [design_md_path]
@@ -769,7 +771,7 @@ def test_atomic_write_unlinks_temp_when_copymode_fails(
 
     monkeypatch.setattr(service_module.shutil, "copymode", failing_copymode)
 
-    with pytest.raises(OSError, match="simulated copymode failure"):
+    with pytest.raises(SourceWriteError, match="simulated copymode failure"):
         service_module._atomic_write_bytes(target, b"new content\n")
 
     assert target.read_bytes() == b"original\n"
@@ -811,7 +813,7 @@ def test_atomic_write_unlinks_temp_when_handle_write_fails(
 
     monkeypatch.setattr(service_module.os, "fdopen", fdopen_with_failing_write)
 
-    with pytest.raises(OSError, match="simulated write failure"):
+    with pytest.raises(SourceWriteError, match="simulated write failure"):
         service_module._atomic_write_bytes(target, b"new content\n")
 
     assert target.read_bytes() == b"original\n"
@@ -822,21 +824,22 @@ def test_atomic_write_unlinks_temp_when_handle_write_fails(
     hasattr(os, "getuid") and os.getuid() == 0,
     reason="root bypasses directory permission bits",
 )
-def test_atomic_write_propagates_permission_error_on_unwritable_parent(
+def test_atomic_write_wraps_permission_error_on_unwritable_parent(
     tmp_path: Path,
 ) -> None:
-    """mkstemp cannot create the temp in a read-only directory; the error propagates."""
+    """mkstemp cannot create the temp in a read-only directory; wrapped with cause."""
     design_dir = tmp_path / "locked"
     design_dir.mkdir()
     target = design_dir / "DESIGN.md"
     target.write_bytes(b"original\n")
     design_dir.chmod(0o500)
     try:
-        with pytest.raises(PermissionError):
+        with pytest.raises(SourceWriteError) as excinfo:
             service_module._atomic_write_bytes(target, b"new content\n")
     finally:
         design_dir.chmod(0o700)
 
+    assert isinstance(excinfo.value.__cause__, PermissionError)
     assert target.read_bytes() == b"original\n"
 
 

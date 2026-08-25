@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import shutil
@@ -29,6 +30,7 @@ from backend.app.protokflow.model.types import utcnow
 from backend.app.protokflow.service.errors import (
     ConcurrentModificationError,
     MissingSourceFileError,
+    SourceWriteError,
     TokenReparentingError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
@@ -184,19 +186,37 @@ def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
     to disk around the rename operation.
 
     Symlinks and hard links are rejected before writing to prevent breaking link
-    targets during directory entry replacement.
+    targets during directory entry replacement. Disk failures raise
+    SourceWriteError with the original OSError as __cause__ so callers only
+    need to handle the storage-layer exception hierarchy.
 
     Returns the stat result from the temporary file descriptor before replacement,
     capturing the exact metadata of the written bytes.
     """
-    if os.path.islink(path) or os.lstat(path).st_nlink > 1:
+    try:
+        stat_result = os.lstat(path)
+    except FileNotFoundError as error:
+        raise MissingSourceFileError(
+            f"source file for design system is missing: {path}"
+        ) from error
+    except OSError as error:
+        raise SourceWriteError(
+            f"failed to inspect DESIGN.md source before atomic write: {path}: {error}"
+        ) from error
+    if os.path.islink(path) or stat_result.st_nlink > 1:
         raise UnsupportedSourceLinkError(
             f"DESIGN.md source is a symlink or hard link and cannot be "
             f"atomically replaced: {path}"
         )
-    descriptor, temp_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
+    try:
+        descriptor, temp_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
+    except OSError as error:
+        raise SourceWriteError(
+            f"failed to create a temporary file beside DESIGN.md source: "
+            f"{path}: {error}"
+        ) from error
     temp_path = Path(temp_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -208,8 +228,13 @@ def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
         os.replace(temp_path, path)
         _fsync_directory(path.parent)
         return stat
-    except BaseException:
-        temp_path.unlink(missing_ok=True)
+    except BaseException as error:
+        with contextlib.suppress(OSError):
+            temp_path.unlink(missing_ok=True)
+        if isinstance(error, OSError):
+            raise SourceWriteError(
+                f"failed to atomically write DESIGN.md source: {path}: {error}"
+            ) from error
         raise
 
 

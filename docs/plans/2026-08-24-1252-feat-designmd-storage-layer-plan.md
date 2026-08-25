@@ -40,7 +40,7 @@ None.
 Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 레포 루트의 `DESIGN.md`와 `design/{slug}.md`를 탐색해 정규화된 토큰 트리로 인덱싱하고, Front Matter 원문을 보존해 편집 시 대상 토큰만 치환하는 write-through를 제공하며, 매 진입점에서 `(mtime_ns, size)` 선검사로 외부 변경을 감지해 재인덱싱한다. 기존 8개 테이블 모델 위에 repository·service 계층과 CLI 진입점을 얹고, 프로토타입이 검증한 파서/직렬화기를 제품 트리로 이식한다.
 
 ### Problem Frame
-저장소 모델 8개 테이블과 부트 경로는 이미 존재하지만 이를 읽고 쓰는 계층이 없다. `backend/app/protokflow/schema/`와 `api/v1/`은 비어 있고 `crud/`·`service/`는 존재하지 않아, 인덱싱된 디자인 시스템이 하나도 없는 상태다. 스키마 버전 부트 체크(`create_tables`)를 담은 `register_init` 수명주기가 `FastAPI(...)`에 연결되지 않아 발화하지 않는다. 테스트 설정이 전무해 회귀를 잡을 수단도 없다.
+저장소 모델 8개 테이블과 부트 경로는 이미 존재하지만 이를 읽고 쓰는 계층이 없다. `backend/app/protokflow/schema/`와 `api/v1/`은 비어 있고 `crud/`·`service/`는 존재하지 않아, 인덱싱된 디자인 시스템이 하나도 없는 상태다. 스키마 버전 부트 체크(`create_tables`)를 담은 `register_init` 수명주기가 `FastAPI(...)`에 연결되지 않아 발화하지 않는다. 표준 테스트 하니스는 구현 완료되어 있다 — conftest 환경 주입, 워커별 격리 DB, `test_db` 픽스처, 격리 불변식 메타 테스트가 갖춰져 있으므로 본 플랜의 테스트는 이 기반을 새로 만들지 않고 소비한다.
 
 공식 스펙(`@google/design.md` 0.4.0) 기반 라운드트립 전략, 앵커 처리, 토큰 컬럼 규격 및 `front_matter_raw` 스키마가 검증 완료되었으며, 본 플랜은 이를 프로덕션 저장소 계층으로 구현하는 것을 목표로 한다.
 
@@ -58,7 +58,7 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 
 #### 저장소 및 동기화
 - R17. 8개 테이블 SQLite 저장소를 실제로 읽고 쓰는 계층을 제공해야 한다. 디자인 시스템 조회·생성·갱신과 토큰 전량 동기화가 단일 트랜잭션으로 완결되어야 한다. 상세 스키마는 [데이터베이스 스키마 설계](../concepts/database-schema.md)를 단일 소스로 한다.
-- R20. 부팅 시 `schema_meta.schema_version`을 검사해 코드가 기대하는 버전과 비교하고, 불일치 시 명확한 오류와 복구 안내를 제공해야 한다. DB 삭제 후 `DESIGN.md`로부터의 재인덱싱이 항상 유효한 복구 경로여야 한다.
+- R20. 부팅 시 `PRAGMA user_version`을 검사해 코드가 기대하는 버전과 비교하고, 불일치 시 명확한 오류와 복구 안내를 제공해야 한다. DB 삭제 후 `DESIGN.md`로부터의 재인덱싱이 항상 유효한 복구 경로여야 한다.
 - R21. 저장소 진입점마다 대응 `DESIGN.md` 파일의 `(mtime_ns, size)`를 선검사하고, 불일치할 때만 sha256을 계산해 재인덱싱 여부를 판정해야 한다. mtime은 부동소수점 초가 아닌 정수 나노초(`st_mtime_ns`)로 저장·비교한다. `git pull`, 브랜치 전환, fresh clone, 파일 직접 편집을 모두 감지해야 한다. mtime을 보존한 채 내용만 바꾸는 변경(`cp -p`, `rsync -a`, `touch -r` 조합)은 stat 선검사의 감지 밖이며, `protokflow index` 재실행이 선검사를 우회하는 강제 재인덱싱 탈출구다.
 
 ### Acceptance Examples
@@ -97,7 +97,7 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 - `(mtime_ns, size)` 선검사 기반 재조정 (R21)
 - 수명주기 배선 및 스키마 버전 부트 체크 발화 (R20)
 - CLI 진입점 — 인덱싱과 상태 조회
-- 공식 린터 기반 회귀 테스트 스위트 및 pytest 하니스
+- 공식 린터 기반 회귀 테스트 스위트 — 구현 완료된 표준 테스트 하니스(`test_db` 픽스처)를 소비한다
 
 #### Deferred for Later
 - 파생 디자인 시스템 및 `promote_tokens`의 fork/capture/merge 시맨틱 (R22) — 승격 시맨틱 및 독립적 설계 요구에 따른 후속 과제 분리.
@@ -242,33 +242,28 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 ## Implementation Units
 
-### U1. 런타임 의존성과 테스트 하니스
+### U1. 런타임 의존성 등록
 
-**Goal**: `ruamel.yaml`을 선언된 런타임 의존성으로 올리고, 테스트가 격리된 DB에서 async로 실행되는 기반을 만든다.
+**Goal**: `ruamel.yaml`을 선언된 런타임 의존성으로 올린다. 테스트 실행 기반은 구현 완료된 표준 하니스가 이미 제공하므로 이 플랜에서 새로 만들지 않는다.
 
-**Requirements**: KTD2를 충족한다. 이후 모든 유닛의 테스트 실행 조건이다.
+**Requirements**: KTD2의 의존성 부분. 이후 모든 유닛의 테스트 실행 조건이다.
 
 **Dependencies**: 없음.
 
 **Files**:
-- `pyproject.toml` — `[project.dependencies]`에 `ruamel.yaml` 추가, `[tool.pytest.ini_options]` 신설
+- `pyproject.toml` — `[project.dependencies]`에 `ruamel.yaml` 추가
 - `uv.lock`, `requirements.txt` — 재생성
-- `tests/conftest.py` — async 엔진·세션 픽스처
 - `tests/app/protokflow/__init__.py` 등 패키지 초기화
 
 **Approach**:
 1. `ruamel.yaml`을 런타임 의존성으로 추가하고 lock·requirements를 재생성한다.
-2. `[tool.pytest.ini_options]`에 `asyncio_mode = "auto"`와 `testpaths`를 설정한다. `pytest-asyncio`는 이미 dev 의존성에 있다.
-3. `conftest.py`에서 `create_database_url(unittest=True)`로 테스트 전용 DB를 만들고, `db._set_factory_for_testing`으로 세션 팩토리를 교체한다. 이 훅은 import 시점에 심볼을 바인딩한 소비자까지 리다이렉트하도록 설계되어 있다.
-4. 테스트마다 테이블을 생성·삭제해 격리한다.
+2. 테스트는 기존 하니스를 그대로 소비한다 — `tests/conftest.py`의 환경 주입과 `tests/fixtures/db.py`의 `test_db` 픽스처(엔진 주입 훅, 테이블 생성·삭제, 프로덕션 DB 비간섭 가드)가 이미 갖춰져 있다. 로컬 격리 픽스처 재정의나 격리 훅 직접 호출은 메타 테스트의 AST 가드가 차단하므로, 도메인 테스트는 `test_db`를 선언해 소비하기만 하면 된다.
 
-**Patterns to follow**: `backend/database/db.py`의 `_SessionFactoryProxy`와 `_set_factory_for_testing` docstring이 의도된 사용법을 명시한다.
+**Patterns to follow**: `tests/fixtures/db.py`의 픽스처 스택과 `tests/database/test_fixtures.py`의 소비 방식.
 
 **Test scenarios**:
-- async 테스트가 세션을 열고 8개 테이블이 모두 존재함을 확인한다.
-- 한 테스트가 쓴 행이 다음 테스트에서 보이지 않는다(격리 검증).
 - `ruamel.yaml`이 런타임 import 경로에서 사용 가능하다.
-- 부트가 `schema_meta.schema_version`을 `'1'`로 시드하고, 재실행 시 중복 삽입하지 않는다.
+- 이미 충족 — async 세션에서 8개 테이블 존재와 테스트 간 행 격리는 하니스 계약 테스트(`tests/database/test_fixtures.py`)가 증명한다.
 
 **Verification**: `uv sync`가 통과하고 `pytest`가 수집·실행된다. `pyproject.toml`에 `ruamel` 문자열이 존재한다.
 
@@ -479,11 +474,11 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 **Approach**:
 1. `register_init` 수명주기를 `FastAPI(...)` 생성자의 `lifespan` 인자로 연결한다. 현재 정의만 되어 있고 배선되지 않아 `create_tables()`가 호출되지 않는다.
 2. `SchemaVersionMismatch`가 부트에서 발생하면 애플리케이션이 기동을 즉시 중단해야 한다. 이는 손상된 스키마 상태에서의 도구 실행으로 인한 데이터 오염을 차단하기 위함이다.
-3. 스키마 버전 시드·검증은 기동 완료 전에 명시적으로 커밋되는 트랜잭션에서 실행한다. `create_tables()`의 `ensure_schema_version()` 호출이 커밋 없는 세션 컨텍스트에 방치되면 매 부팅이 시드 행 부재로 관측해 중복 삽입을 반복하게 된다.
+3. 스키마 버전 시드·검증은 하나의 트랜잭션에서 실행된다. `create_tables()`는 이미 활성 엔진의 `begin()` 블록에서 `create_all`과 `ensure_schema_version()`을 함께 실행하므로(`backend/database/db.py:101-106`), 배선은 이 경계를 그대로 통과시킨다. 버전은 `schema_meta` 테이블이 아니라 `PRAGMA user_version`에 기록된다 — 값이 0이면 기대 버전으로 시드하고, 기대와 다르면 `SchemaVersionMismatch`를 발생시킨다(`backend/database/db.py:84-98`). 테스트에서는 하니스의 엔진 주입 훅이 이 DDL을 테스트 DB로 라우팅한다.
 
 **Test scenarios**:
-- 앱 기동이 테이블을 생성하고 `schema_meta.schema_version`을 시드한다.
-- 이미 시드된 DB로 기동해도 중복 삽입이 없다.
+- 앱 기동이 테이블을 생성하고 `PRAGMA user_version`을 기대 버전으로 시드한다.
+- 이미 시드된 DB로 기동하면 값을 다시 쓰지 않는다.
 - 버전이 다른 DB로 기동하면 `SchemaVersionMismatch`가 발생하고 메시지가 DB 경로와 복구 절차를 포함한다.
 
 **Verification**: `TestClient` 또는 수명주기 컨텍스트로 앱을 기동해 테이블 존재를 확인한다.
@@ -507,8 +502,8 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 **Approach**:
 1. CLI는 기존 `cappa` 스텁을 확장한다. `index`는 탐색·인덱싱을 실행하고 결과를 요약한다. `status`는 인덱싱된 디자인 시스템과 동기화 상태를 나열한다. `index`는 선검사를 거치지 않고 파일을 전량 다시 읽으므로 mtime 보존 변경(R21 감지 경계)에 대한 강제 재인덱싱 탈출구를 겸한다.
-2. 린터 적합성 테스트는 `node`로 vendored 패키지의 `lint --format json`을 실행하고 원본 대비 신규 findings를 비교한다.
-3. `node`가 없는 로컬 환경에서는 해당 테스트만 skip한다. 나머지 스위트는 순수 Python으로 실행 가능해야 한다. CI 검증 환경에는 Node를 설치해 린터 적합성 스위트를 필수로 실행한다 — skip은 로컬 전용이다.
+2. 린터 적합성 테스트는 `node`로 vendored 패키지의 `lint --format json`을 실행하고 원본 대비 신규 findings를 비교한다. `tooling` 마커를 붙여 opt-in 레인에서 실행한다 — 마커는 이미 등록되어 있고 기본 `addopts`의 `-m 'not tooling'`이 기본 실행에서 제외한다.
+3. `node`가 없는 로컬 환경에서는 해당 테스트만 skip한다. 나머지 스위트는 순수 Python으로 실행 가능해야 한다. CI 검증 환경에는 Node를 설치해 `uv run pytest -m tooling`으로 린터 적합성 스위트를 필수로 실행한다 — skip은 로컬 전용이다.
 4. vendoring 대상은 tarball 또는 언팩된 `dist/`다. 갱신 절차를 README에 남긴다 — 스펙 버전이 올라가면 픽스처 기대값이 바뀔 수 있다.
 
 **Test scenarios**:
@@ -531,7 +526,8 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 | 게이트 | 명령 | 통과 조건 |
 |---|---|---|
 | 의존성 동기화 | `uv sync` | 오류 없이 완료, `ruamel.yaml` 설치됨 |
-| 테스트 | `uv run pytest` | 전체 통과. `node` 부재 시 린터 적합성만 skip |
+| 테스트(기본) | `uv run pytest` | 전체 통과(tooling 레인은 기본 제외) |
+| 테스트(tooling) | `uv run pytest -m tooling` | 전체 통과. `node` 부재 시 린터 적합성만 skip |
 | 린트 | `uv run ruff check backend/ tests/` | All checks passed |
 | 포맷 | `uv run ruff format --check backend/ tests/` | 변경 없음 |
 | 타입 | `uv run mypy backend/` | Success |

@@ -13,14 +13,17 @@ from backend.app.protokflow.core.designmd import (
 )
 from backend.app.protokflow.core.errors import (
     FencedYamlBlockError,
+    InvalidFrontMatterError,
     MixedLineEndingsError,
     UnknownTokenPathError,
     UnterminatedFrontMatterError,
     YamlAnchorError,
 )
+from ruamel.yaml.error import YAMLError
 
 FIXTURE_DIR = Path(__file__).parents[3] / "fixtures" / "design_md"
 MARKDOWN_FENCE = chr(96) * 3
+_FOUR_BACKTICKS = MARKDOWN_FENCE + chr(96)
 
 ROUND_TRIP_FIXTURES = (
     "doc-assumed.md",
@@ -186,6 +189,35 @@ def test_serialize_rejects_output_with_mixed_line_endings() -> None:
         )
 
 
+def test_serialize_rejects_anchored_front_matter() -> None:
+    with pytest.raises(YamlAnchorError):
+        serialize_design_md(
+            front_matter_raw="colors:\n  primary: &ink '#0B0E14'\n  overlay: *ink\n",
+            closing_fence="---\n",
+            guide_markdown="# Guide\n",
+            eol="\n",
+            token_patches={"colors.primary": "#FFFFFF"},
+        )
+
+
+def test_serialize_rejects_fenced_yaml_in_guide() -> None:
+    guide = (
+        "# Guide\n\n"
+        + MARKDOWN_FENCE
+        + "yaml\ncolors:\n  primary: '#0B0E14'\n"
+        + MARKDOWN_FENCE
+        + "\n"
+    )
+
+    with pytest.raises(FencedYamlBlockError):
+        serialize_design_md(
+            front_matter_raw="name: Has Guide\n",
+            closing_fence="---\n",
+            guide_markdown=guide,
+            eol="\n",
+        )
+
+
 @pytest.mark.parametrize("front_matter", [True, False])
 def test_fenced_yaml_block_is_rejected_with_guidance(front_matter: bool) -> None:
     heading = "---\nname: Rejected\n---\n" if front_matter else ""
@@ -203,6 +235,74 @@ def test_fenced_yaml_block_is_rejected_with_guidance(front_matter: bool) -> None
 def test_unterminated_front_matter_fence_is_a_parse_error() -> None:
     with pytest.raises(UnterminatedFrontMatterError):
         parse_design_md("---\nname: Broken\ncolors:\n  primary: '#0B0E14'\n")
+
+
+@pytest.mark.parametrize(
+    "front_matter",
+    [
+        "colors:\n  &brand primary: '#FFFFFF'\n",
+        "colors:\n  primary: &nil null\n",
+        "omitted:\n  - &first spacing\n",
+        "typography:\n  body-md:\n    fontFamily: &face Inter\n",
+    ],
+    ids=["anchored-key", "anchored-null", "anchored-list-item", "deep-nesting"],
+)
+def test_anchor_positions_are_rejected(front_matter: str) -> None:
+    text = f"---\n{front_matter}---\n# Guide\n"
+
+    with pytest.raises(YamlAnchorError):
+        parse_design_md(text)
+
+
+@pytest.mark.parametrize(
+    "fence",
+    [
+        MARKDOWN_FENCE + "yaml",
+        MARKDOWN_FENCE + "yml",
+        _FOUR_BACKTICKS + "yaml",
+        "~~~yaml",
+        "~~~yml",
+        "  " + MARKDOWN_FENCE + "yaml",
+    ],
+    ids=[
+        "three-backticks",
+        "three-backticks-yml",
+        "four-backticks",
+        "tildes",
+        "tildes-yml",
+        "indented",
+    ],
+)
+def test_fenced_yaml_spelling_variants_are_rejected(fence: str) -> None:
+    text = f"# Guide\n\n{fence}\ncolors:\n  primary: '#0B0E14'\n"
+
+    with pytest.raises(FencedYamlBlockError):
+        parse_design_md(text)
+
+
+def test_non_yaml_fences_are_allowed() -> None:
+    text = (
+        "# Guide\n\n"
+        + MARKDOWN_FENCE
+        + 'json\n{"a": 1}\n'
+        + MARKDOWN_FENCE
+        + "\n\n"
+        + MARKDOWN_FENCE
+        + "\nplain block\n"
+        + MARKDOWN_FENCE
+        + "\n"
+    )
+
+    parsed = parse_design_md(text)
+
+    assert parsed.guide_markdown == text
+
+
+def test_malformed_yaml_raises_invalid_front_matter_error() -> None:
+    with pytest.raises(InvalidFrontMatterError) as excinfo:
+        parse_design_md("---\nname: [unclosed\n---\n# Guide\n")
+
+    assert isinstance(excinfo.value.__cause__, YAMLError)
 
 
 def test_token_tiers_cover_foundation_and_component() -> None:

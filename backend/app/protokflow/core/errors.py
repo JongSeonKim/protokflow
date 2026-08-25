@@ -38,3 +38,7 @@ class MixedLineEndingsError(DesignMdError):
     One line-ending style per document is required so re-emission stays
     byte-faithful instead of silently rewriting every line.
     """
+
+
+class InvalidFrontMatterError(DesignMdError):
+    """Front matter is not valid YAML syntax or not a top-level mapping."""

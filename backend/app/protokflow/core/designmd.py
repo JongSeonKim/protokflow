@@ -16,10 +16,13 @@ from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.events import AliasEvent
+from ruamel.yaml.error import YAMLError
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScalarString
 
 from backend.app.protokflow.core.errors import (
     FencedYamlBlockError,
+    InvalidFrontMatterError,
     MixedLineEndingsError,
     UnknownTokenPathError,
     UnterminatedFrontMatterError,
@@ -31,9 +34,9 @@ COMPONENT_GROUP = "components"
 MODELED_SCALARS = ("version", "name", "description")
 FENCE = "---"
 
-_MARKDOWN_FENCE = chr(96) * 3
+_BACKTICK_RUN = chr(96) + "{3,}"
 _FENCED_YAML_RE = re.compile(
-    r"^ {0,3}" + _MARKDOWN_FENCE + r"[ \t]*(?:yaml|yml)(?:[ \t]|$)",
+    r"^ {0,3}(?:" + _BACKTICK_RUN + r"|~{3,})[ \t]*(?:yaml|yml)(?:[ \t]|$)",
     re.IGNORECASE,
 )
 _QUOTED_STYLES = (SingleQuotedScalarString, DoubleQuotedScalarString)
@@ -142,24 +145,26 @@ def _reject_fenced_yaml_blocks(guide_markdown: str) -> None:
             )
 
 
-def _reject_anchors(node: Any) -> None:
-    anchor = getattr(node, "yaml_anchor", None)
-    if callable(anchor):
-        found = anchor()
-        name = getattr(found, "value", None)
-        if name:
-            raise YamlAnchorError(
-                f"front matter must not use YAML anchors or aliases "
-                f"(found '&{name}'); replace them with design.md reference "
-                f"syntax such as {{colors.primary}} so in-place patching "
-                f"keeps references sound (KTD3)"
-            )
-    if isinstance(node, dict):
-        for child in node.values():
-            _reject_anchors(child)
-    elif isinstance(node, list):
-        for child in node:
-            _reject_anchors(child)
+def _reject_anchors(front_matter_raw: str) -> None:
+    """Reject anchors and aliases on the YAML event stream.
+
+    The composed tree loses anchors on mapping keys and on null scalars, so
+    the gate runs on events where every anchored node and alias is still
+    visible, before alias resolution can hide them.
+    """
+    try:
+        for event in _yaml().parse(io.StringIO(front_matter_raw)):
+            anchor = getattr(event, "anchor", None)
+            if anchor:
+                sigil = "*" if isinstance(event, AliasEvent) else "&"
+                raise YamlAnchorError(
+                    f"front matter must not use YAML anchors or aliases "
+                    f"(found '{sigil}{anchor}'); replace them with design.md "
+                    f"reference syntax such as {{colors.primary}} so in-place "
+                    f"patching keeps references sound (KTD3)"
+                )
+    except YAMLError as exc:
+        raise InvalidFrontMatterError(f"front matter is not valid YAML: {exc}") from exc
 
 
 def _scalar_text(node: Any) -> str:
@@ -204,8 +209,9 @@ def parse_design_md(text: str) -> ParsedDesignSystem:
     """Parse a DESIGN.md file, rejecting anchors and fenced yaml blocks."""
     split = split_front_matter(text)
     _reject_fenced_yaml_blocks(split.guide_markdown)
+    if split.front_matter_raw and split.front_matter_raw.strip():
+        _reject_anchors(split.front_matter_raw)
     front_matter = _load_front_matter(split.front_matter_raw or "")
-    _reject_anchors(front_matter)
 
     tokens: list[TokenRow] = []
     for group_name in FOUNDATION_GROUPS:
@@ -260,6 +266,9 @@ def serialize_design_md(
     if eol not in ("\n", "\r\n"):
         raise MixedLineEndingsError("line ending must be LF or CRLF")
     patches = token_patches or {}
+    _reject_fenced_yaml_blocks(guide_markdown)
+    if front_matter_raw is not None and front_matter_raw.strip():
+        _reject_anchors(front_matter_raw)
     if front_matter_raw is None:
         if patches:
             raise UnknownTokenPathError(

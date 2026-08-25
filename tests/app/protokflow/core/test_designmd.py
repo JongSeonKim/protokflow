@@ -1,0 +1,221 @@
+"""Byte-level round-trip and rejection tests for the DESIGN.md codec."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from backend.app.protokflow.core.designmd import (
+    ParsedDesignSystem,
+    parse_design_md,
+    serialize_design_md,
+)
+from backend.app.protokflow.core.errors import (
+    FencedYamlBlockError,
+    UnknownTokenPathError,
+    UnterminatedFrontMatterError,
+    YamlAnchorError,
+)
+
+FIXTURE_DIR = Path(__file__).parents[3] / "fixtures" / "design_md"
+MARKDOWN_FENCE = chr(96) * 3
+
+ROUND_TRIP_FIXTURES = (
+    "doc-assumed.md",
+    "spec-canonical.md",
+    "adversarial.md",
+    "team-authored.md",
+)
+
+
+def _read_fixture(name: str) -> str:
+    return (FIXTURE_DIR / name).read_bytes().decode()
+
+
+def _parse_fixture(name: str) -> ParsedDesignSystem:
+    return parse_design_md(_read_fixture(name))
+
+
+def _serialize(parsed: ParsedDesignSystem) -> str:
+    return serialize_design_md(
+        front_matter_raw=parsed.front_matter_raw,
+        guide_markdown=parsed.guide_markdown,
+    )
+
+
+@pytest.mark.parametrize("name", ROUND_TRIP_FIXTURES)
+def test_round_trip_without_edits_is_byte_identical(name: str) -> None:
+    original = _read_fixture(name)
+    parsed = parse_design_md(original)
+
+    assert _serialize(parsed) == original
+
+
+def test_no_front_matter_yields_zero_tokens_and_markdown_body() -> None:
+    original = _read_fixture("no-front-matter.md")
+
+    parsed = parse_design_md(original)
+
+    assert parsed.tokens == []
+    assert parsed.front_matter_raw == ""
+    assert parsed.guide_markdown == original
+    assert parsed.title is None
+    assert parsed.description is None
+    assert parsed.spec_version is None
+    assert parsed.front_matter_extras == {}
+
+
+@pytest.mark.parametrize("front_matter", [True, False])
+def test_fenced_yaml_block_is_rejected_with_guidance(front_matter: bool) -> None:
+    heading = "---\nname: Rejected\n---\n" if front_matter else ""
+    fenced_yaml = (
+        MARKDOWN_FENCE + "yaml\ncolors:\n  primary: '#0B0E14'\n" + MARKDOWN_FENCE
+    )
+    text = f"{heading}# Guide\n\n{fenced_yaml}\n"
+
+    with pytest.raises(FencedYamlBlockError) as excinfo:
+        parse_design_md(text)
+
+    assert "front matter" in str(excinfo.value)
+
+
+def test_unterminated_front_matter_fence_is_a_parse_error() -> None:
+    with pytest.raises(UnterminatedFrontMatterError):
+        parse_design_md("---\nname: Broken\ncolors:\n  primary: '#0B0E14'\n")
+
+
+def test_token_tiers_cover_foundation_and_component() -> None:
+    parsed = _parse_fixture("spec-canonical.md")
+
+    paths = {(row.tier, row.token_path) for row in parsed.tokens}
+
+    assert {tier for tier, _ in paths} == {"foundation", "component"}
+    assert ("foundation", "colors.primary") in paths
+    assert ("component", "components.button-primary.backgroundColor") in paths
+
+
+def test_depth_three_token_paths_are_extracted() -> None:
+    parsed = _parse_fixture("spec-canonical.md")
+
+    values = {row.token_path: row.value for row in parsed.tokens}
+
+    assert values["typography.body-md.fontSize"] == "16px"
+
+
+def test_yaml_numbers_are_extracted_as_strings() -> None:
+    parsed = _parse_fixture("spec-canonical.md")
+
+    values = {row.token_path: row.value for row in parsed.tokens}
+
+    assert values["typography.body-md.fontWeight"] == "400"
+    assert values["typography.body-md.lineHeight"] == "1.6"
+    assert values["typography.headline-lg.fontWeight"] == "600"
+
+
+def test_omitted_and_unknown_keys_are_preserved_in_extras() -> None:
+    parsed = _parse_fixture("adversarial.md")
+
+    extras = parsed.front_matter_extras
+
+    assert set(extras) == {"omitted", "iconography"}
+    assert extras["omitted"] == [
+        "spacing",
+        {"section": "rounded", "reason": "No rounded corners defined in brand book"},
+    ]
+    assert extras["iconography"] == {"set": "lucide", "stroke": 1.5}
+
+
+def test_modeled_scalars_are_separated_from_extras() -> None:
+    parsed = _parse_fixture("spec-canonical.md")
+
+    assert parsed.spec_version == "alpha"
+    assert parsed.title == "Daylight Prestige"
+    assert (
+        parsed.description
+        == "A high-contrast editorial system for long-form product surfaces."
+    )
+    assert "name" not in parsed.front_matter_extras
+
+
+def test_patching_one_token_changes_exactly_one_line() -> None:
+    original = _read_fixture("team-authored.md")
+    parsed = parse_design_md(original)
+
+    patched = serialize_design_md(
+        front_matter_raw=parsed.front_matter_raw,
+        guide_markdown=parsed.guide_markdown,
+        token_patches={"colors.primary": "#3AA6B9"},
+    )
+
+    original_lines = original.splitlines(keepends=True)
+    patched_lines = patched.splitlines(keepends=True)
+    changed = [
+        (left, right)
+        for left, right in zip(original_lines, patched_lines, strict=True)
+        if left != right
+    ]
+
+    assert len(changed) == 1
+    assert "#3AA6B9" in changed[0][1]
+    assert "# 승인됨 2026-08-11" in changed[0][1]
+
+
+def test_patching_preserves_quoted_style_of_the_patched_line() -> None:
+    parsed = _parse_fixture("adversarial.md")
+
+    patched = serialize_design_md(
+        front_matter_raw=parsed.front_matter_raw,
+        guide_markdown=parsed.guide_markdown,
+        token_patches={"typography.body-md.fontWeight": "500"},
+    )
+
+    patched_line = next(
+        line for line in patched.splitlines() if 'fontWeight: "500"' in line
+    )
+    assert "# quoted number" in patched_line
+
+
+def test_patching_unknown_token_path_raises_clear_error() -> None:
+    parsed = _parse_fixture("team-authored.md")
+
+    with pytest.raises(UnknownTokenPathError):
+        serialize_design_md(
+            front_matter_raw=parsed.front_matter_raw,
+            guide_markdown=parsed.guide_markdown,
+            token_patches={"colors.nonexistent": "#000000"},
+        )
+
+
+def test_anchor_in_front_matter_is_rejected_with_reference_guidance() -> None:
+    with pytest.raises(YamlAnchorError) as excinfo:
+        _parse_fixture("anchors.md")
+
+    assert "{colors.primary}" in str(excinfo.value)
+
+
+def test_alias_pointing_across_groups_is_rejected() -> None:
+    text = (
+        "---\n"
+        "typography:\n"
+        "  font-family: &body Inter\n"
+        "colors:\n"
+        "  primary: '#111111'\n"
+        "  text: *body\n"
+        "---\n"
+        "# Guide\n"
+    )
+
+    with pytest.raises(YamlAnchorError):
+        parse_design_md(text)
+
+
+def test_folded_scalar_and_mixed_quotes_survive_round_trip() -> None:
+    original = _read_fixture("adversarial.md")
+    parsed = parse_design_md(original)
+
+    assert parsed.description == (
+        "A dark operations console theme. Folded scalar, two source lines, "
+        "one logical value."
+    )
+    assert _serialize(parsed) == original

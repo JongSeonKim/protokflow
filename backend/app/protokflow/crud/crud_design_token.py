@@ -42,8 +42,6 @@ class CRUDDesignToken(CRUDPlus[DesignToken]):
         await self.delete_model_by_column(
             db, allow_multiple=True, design_system_id=design_system_id
         )
-        for token in token_rows:
-            token.design_system_id = design_system_id
         db.add_all(token_rows)
         await db.flush()
 

@@ -66,6 +66,13 @@ def test_no_front_matter_yields_zero_tokens_and_markdown_body() -> None:
     assert parsed.front_matter_extras == {}
 
 
+def test_no_front_matter_round_trip_is_byte_identical() -> None:
+    original = _read_fixture("no-front-matter.md")
+    parsed = parse_design_md(original)
+
+    assert _serialize(parsed) == original
+
+
 @pytest.mark.parametrize("front_matter", [True, False])
 def test_fenced_yaml_block_is_rejected_with_guidance(front_matter: bool) -> None:
     heading = "---\nname: Rejected\n---\n" if front_matter else ""

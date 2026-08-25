@@ -16,10 +16,7 @@ from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
-from ruamel.yaml.scalarstring import (
-    DoubleQuotedScalarString,
-    SingleQuotedScalarString,
-)
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScalarString
 
 from backend.app.protokflow.core.errors import (
     FencedYamlBlockError,
@@ -156,9 +153,8 @@ def _flatten(group_name: str, group: Any, tier: str) -> list[TokenRow]:
 
 
 def _optional_text(front_matter: CommentedMap, key: str) -> str | None:
-    if key not in front_matter or front_matter[key] is None:
-        return None
-    return str(front_matter[key])
+    value = front_matter.get(key)
+    return None if value is None else str(value)
 
 
 def parse_design_md(text: str) -> ParsedDesignSystem:
@@ -214,6 +210,8 @@ def serialize_design_md(
     token_patches: Mapping[str, str] | None = None,
 ) -> str:
     """Re-emit a DESIGN.md file, patching only the requested token paths."""
+    if not front_matter_raw.strip():
+        return guide_markdown
     front_matter = _load_front_matter(front_matter_raw)
     for token_path, value in (token_patches or {}).items():
         _set_token(front_matter, token_path, value)

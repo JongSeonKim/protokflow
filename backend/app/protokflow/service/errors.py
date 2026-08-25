@@ -41,3 +41,12 @@ class SourceWriteError(StorageLayerError):
     The original OSError is preserved as __cause__ so callers can inspect the
     underlying errno while adapters only need to catch StorageLayerError.
     """
+
+
+class SourceRootMismatchError(StorageLayerError):
+    """Raised when a patch targets a repository root other than the indexed one.
+
+    source_path is relative to the repository root recorded at index time;
+    resolving it against a different root would read and patch an unrelated
+    file. Re-index against the current root to rebind the system.
+    """

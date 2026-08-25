@@ -30,6 +30,7 @@ from backend.app.protokflow.model.types import utcnow
 from backend.app.protokflow.service.errors import (
     ConcurrentModificationError,
     MissingSourceFileError,
+    SourceRootMismatchError,
     SourceWriteError,
     TokenReparentingError,
     UnknownDesignSystemError,
@@ -44,6 +45,7 @@ class _ParsedDesignFile:
     """Parsed source data prepared before opening the database transaction."""
 
     slug: str
+    source_root: str
     source_path: str
     source_digest: str
     source_mtime_ns: int
@@ -90,6 +92,7 @@ def _parse_design_file(
     content, stat, parsed = _read_design_file(design_file)
     return _ParsedDesignFile(
         slug=design_file.slug,
+        source_root=repo_root.as_posix(),
         source_path=design_file.path.relative_to(repo_root).as_posix(),
         source_digest=hashlib.sha256(content).hexdigest(),
         source_mtime_ns=stat.st_mtime_ns,
@@ -109,6 +112,7 @@ def _build_design_system(parsed_file: _ParsedDesignFile) -> DesignSystem:
         front_matter_extras=parsed.front_matter_extras,
         front_matter_raw=parsed.front_matter_raw or "",
         guide_markdown=parsed.guide_markdown,
+        source_root=parsed_file.source_root,
         source_path=parsed_file.source_path,
         source_digest=parsed_file.source_digest,
         source_mtime_ns=parsed_file.source_mtime_ns,
@@ -264,6 +268,7 @@ def _patched_parse(
 
 def _patch_and_write(
     slug: str,
+    source_root: str,
     source_path_value: str,
     source_path: Path,
     current: ParsedDesignSystem,
@@ -287,6 +292,7 @@ def _patch_and_write(
     stat = _atomic_write_bytes(source_path, patched_bytes)
     return _ParsedDesignFile(
         slug=slug,
+        source_root=source_root,
         source_path=source_path_value,
         source_digest=digest,
         source_mtime_ns=stat.st_mtime_ns,
@@ -337,6 +343,8 @@ class DesignSystemService:
         The file is the recovery source of truth, so the on-disk document is
         patched in-place first and the database is committed afterwards; a
         database failure leaves the file ahead for change detection to re-index.
+        The resolved repo_root must match the root recorded at index time;
+        otherwise the patch is rejected with SourceRootMismatchError.
 
         :param repo_root: Repository root path
         :param slug: Design system slug
@@ -362,6 +370,12 @@ class DesignSystemService:
                     f"design system '{slug}' has no linked DESIGN.md file; "
                     f"token patches require a file-backed system"
                 )
+            if system.source_root is None or system.source_root != root.as_posix():
+                raise SourceRootMismatchError(
+                    f"design system '{slug}' was indexed from repository root "
+                    f"'{system.source_root}' but the patch targets "
+                    f"'{root.as_posix()}'; re-index against this root to rebind it"
+                )
 
             source_path = root / system.source_path
             source = DiscoveredDesignFile(slug=slug, path=source_path)
@@ -377,6 +391,7 @@ class DesignSystemService:
             written = await asyncio.to_thread(
                 _patch_and_write,
                 slug,
+                root.as_posix(),
                 system.source_path,
                 source_path,
                 current,

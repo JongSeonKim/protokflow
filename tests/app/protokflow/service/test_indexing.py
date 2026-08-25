@@ -257,6 +257,7 @@ async def test_indexing_rolls_back_all_systems_when_persistence_fails(
 def test_build_design_tokens_builds_tokens_matching_design_system_id() -> None:
     parsed_file = _ParsedDesignFile(
         slug="default",
+        source_root="/repo",
         source_path="DESIGN.md",
         source_digest="abc",
         source_mtime_ns=0,
@@ -275,6 +276,7 @@ def test_build_design_tokens_rejects_mismatched_reparenting(
 ) -> None:
     parsed_file = _ParsedDesignFile(
         slug="default",
+        source_root="/repo",
         source_path="DESIGN.md",
         source_digest="abc",
         source_mtime_ns=0,

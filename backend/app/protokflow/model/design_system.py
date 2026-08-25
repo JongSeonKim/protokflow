@@ -64,6 +64,11 @@ class DesignSystem(Base):
     source_path: Mapped[str | None] = mapped_column(
         sa.String(1024), default=None, comment="Linked DESIGN.md path; NULL = DB-only"
     )
+    source_root: Mapped[str | None] = mapped_column(
+        sa.String(1024),
+        default=None,
+        comment="Absolute repo root at index time; source_path is relative to it",
+    )
     source_digest: Mapped[str | None] = mapped_column(
         sa.String(256), default=None, comment="sha256 digest at last sync"
     )

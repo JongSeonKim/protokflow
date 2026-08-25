@@ -22,6 +22,7 @@ from backend.app.protokflow.service.design_system_service import design_system_s
 from backend.app.protokflow.service.errors import (
     ConcurrentModificationError,
     MissingSourceFileError,
+    SourceRootMismatchError,
     SourceWriteError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
@@ -286,6 +287,77 @@ async def test_missing_source_file_raises_domain_error(
         await design_system_service.apply_token_patch(
             repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#000"}
         )
+
+
+async def test_patch_rejects_repo_root_that_differs_from_indexed_root(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    other_root = tmp_path / "other-worktree"
+    other_root.mkdir()
+
+    with pytest.raises(SourceRootMismatchError, match="re-index"):
+        await design_system_service.apply_token_patch(
+            repo_root=other_root,
+            slug="default",
+            token_patches={"colors.primary": "#0B0E14"},
+        )
+
+    assert design_md_path.read_text(encoding="utf-8") == _DESIGN_MD
+
+
+async def test_patch_accepts_repo_root_spelling_that_resolves_to_indexed_root(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    del test_db
+    (tmp_path / "DESIGN.md").write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    root_alias = tmp_path.parent / (tmp_path.name + "-alias")
+    root_alias.symlink_to(tmp_path)
+    try:
+        system = await design_system_service.apply_token_patch(
+            repo_root=root_alias,
+            slug="default",
+            token_patches={"colors.primary": "#0B0E14"},
+        )
+    finally:
+        root_alias.unlink()
+
+    assert (await _token_rows(system.id))["colors.primary"] == "#0B0E14"
+
+
+async def test_patch_rejects_missing_source_root_and_reindex_rebinds_it(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    del test_db
+    (tmp_path / "DESIGN.md").write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    async with db.async_db_session.begin() as session:
+        system = await design_system_dao.get_by_slug(session, "default")
+        assert system is not None
+        system.source_root = None
+
+    with pytest.raises(SourceRootMismatchError, match="re-index"):
+        await design_system_service.apply_token_patch(
+            repo_root=tmp_path,
+            slug="default",
+            token_patches={"colors.primary": "#0B0E14"},
+        )
+
+    await design_system_service.index_all(repo_root=tmp_path)
+    system = await design_system_service.apply_token_patch(
+        repo_root=tmp_path,
+        slug="default",
+        token_patches={"colors.primary": "#0B0E14"},
+    )
+
+    assert (await _token_rows(system.id))["colors.primary"] == "#0B0E14"
 
 
 async def test_source_metadata_describes_one_file_version(

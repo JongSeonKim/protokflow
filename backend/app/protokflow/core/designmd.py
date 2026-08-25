@@ -131,11 +131,16 @@ def _load_front_matter(raw: str) -> CommentedMap:
     # Normalize CRLF before loading: ruamel's round-trip dump drops some
     # EOL blank lines when the input uses CRLF. The raw text is preserved
     # separately, so this only affects the in-memory tree.
-    loaded = _yaml().load(io.StringIO(raw.replace("\r\n", "\n")))
+    try:
+        loaded = _yaml().load(io.StringIO(raw.replace("\r\n", "\n")))
+    except YAMLError as exc:
+        raise InvalidFrontMatterError(f"front matter is not valid YAML: {exc}") from exc
     if loaded is None:
         return CommentedMap()
     if not isinstance(loaded, CommentedMap):
-        raise ValueError("front matter must be a YAML mapping of top-level keys")
+        raise InvalidFrontMatterError(
+            "front matter must be a YAML mapping of top-level keys"
+        )
     return loaded
 
 

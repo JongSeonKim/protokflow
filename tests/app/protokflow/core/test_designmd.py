@@ -308,6 +308,20 @@ def test_malformed_yaml_raises_invalid_front_matter_error() -> None:
     assert isinstance(excinfo.value.__cause__, YAMLError)
 
 
+@pytest.mark.parametrize(
+    "front_matter",
+    ["- one\n- two\n", "just a scalar\n"],
+    ids=["list-root", "scalar-root"],
+)
+def test_non_mapping_front_matter_raises_invalid_front_matter_error(
+    front_matter: str,
+) -> None:
+    text = f"---\n{front_matter}---\n# Guide\n"
+
+    with pytest.raises(InvalidFrontMatterError):
+        parse_design_md(text)
+
+
 def test_token_tiers_cover_foundation_and_component() -> None:
     parsed = _parse_fixture("spec-canonical.md")
 

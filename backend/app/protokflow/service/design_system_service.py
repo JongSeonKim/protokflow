@@ -8,13 +8,14 @@ import os
 import shutil
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from backend.app.protokflow.core.design_md import (
     ParsedDesignSystem,
     parse_design_md,
     serialize_design_md,
+    split_front_matter,
 )
 from backend.app.protokflow.core.discovery import (
     DiscoveredDesignFile,
@@ -192,6 +193,63 @@ def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
         raise
 
 
+def _patched_parse(
+    current: ParsedDesignSystem, patched_text: str, token_patches: Mapping[str, str]
+) -> ParsedDesignSystem:
+    """Derive the parsed form of a patched document without re-parsing it.
+
+    A token path always resolves inside a foundation or component group, while
+    the title, description, and spec version come from the modeled scalars and
+    the extras from every other key. A value patch therefore cannot reach any
+    field except the raw front matter text and the patched token values, so
+    re-running the YAML parser over the emitted bytes would only reproduce what
+    the caller already holds.
+    """
+    return replace(
+        current,
+        front_matter_raw=split_front_matter(patched_text).front_matter_raw,
+        tokens=[
+            replace(token, value=token_patches[token.token_path])
+            if token.token_path in token_patches
+            else token
+            for token in current.tokens
+        ],
+    )
+
+
+def _patch_and_write(
+    slug: str,
+    source_path_value: str,
+    source_path: Path,
+    current: ParsedDesignSystem,
+    token_patches: Mapping[str, str],
+) -> _ParsedDesignFile:
+    """Serialize, write, and describe a patched document off the event loop.
+
+    Serialization is the most expensive step in a token patch, so it shares the
+    worker thread with the file write instead of blocking the loop that serves
+    the preview.
+    """
+    patched_text = serialize_design_md(
+        front_matter_raw=current.front_matter_raw,
+        closing_fence=current.closing_fence,
+        guide_markdown=current.guide_markdown,
+        eol=current.eol,
+        token_patches=token_patches,
+    )
+    patched_bytes = patched_text.encode("utf-8")
+    digest = hashlib.sha256(patched_bytes).hexdigest()
+    stat = _atomic_write_bytes(source_path, patched_bytes)
+    return _ParsedDesignFile(
+        slug=slug,
+        source_path=source_path_value,
+        source_digest=digest,
+        source_mtime_ns=stat.st_mtime_ns,
+        source_size=stat.st_size,
+        parsed=_patched_parse(current, patched_text, token_patches),
+    )
+
+
 class DesignSystemService:
     """Design system service class."""
 
@@ -244,23 +302,13 @@ class DesignSystemService:
         source_path = root / system.source_path
         source = DiscoveredDesignFile(slug=slug, path=source_path)
         _, _, current = await asyncio.to_thread(_read_design_file, source)
-        patched_text = serialize_design_md(
-            front_matter_raw=current.front_matter_raw,
-            closing_fence=current.closing_fence,
-            guide_markdown=current.guide_markdown,
-            eol=current.eol,
-            token_patches=token_patches,
-        )
-
-        patched_bytes = patched_text.encode("utf-8")
-        stat = await asyncio.to_thread(_atomic_write_bytes, source_path, patched_bytes)
-        written = _ParsedDesignFile(
-            slug=slug,
-            source_path=system.source_path,
-            source_digest=hashlib.sha256(patched_bytes).hexdigest(),
-            source_mtime_ns=stat.st_mtime_ns,
-            source_size=stat.st_size,
-            parsed=_parse_design_content(source_path, patched_bytes),
+        written = await asyncio.to_thread(
+            _patch_and_write,
+            slug,
+            system.source_path,
+            source_path,
+            current,
+            token_patches,
         )
         persisted = await _persist_design_files([written])
         return persisted[0]

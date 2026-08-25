@@ -11,7 +11,7 @@ from stat import S_ISDIR
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.protokflow.core.design_md import split_front_matter
+from backend.app.protokflow.core.design_md import parse_design_md, split_front_matter
 from backend.app.protokflow.core.errors import (
     MissingSourceFileError,
     UnknownDesignSystemError,
@@ -377,3 +377,59 @@ async def test_patch_records_metadata_of_the_bytes_it_wrote(
     assert updated.source_mtime_ns == written_mtime_ns[0]
     assert updated.source_size == len(written[0])
     assert updated.source_digest == hashlib.sha256(written[0]).hexdigest()
+
+
+async def test_patch_parses_the_document_only_once(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The patched form is derived, not re-parsed, so the hot path pays one parse."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    parses = 0
+    real_parse = service_module.parse_design_md
+
+    def counting_parse(text: str) -> object:
+        nonlocal parses
+        parses += 1
+        return real_parse(text)
+
+    monkeypatch.setattr(service_module, "parse_design_md", counting_parse)
+
+    await design_system_service.apply_token_patch(
+        repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#0B0E14"}
+    )
+
+    assert parses == 1
+
+
+async def test_derived_parse_matches_a_full_reparse(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """Deriving the patched form must agree with parsing the emitted bytes."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    await design_system_service.apply_token_patch(
+        repo_root=tmp_path,
+        slug="default",
+        token_patches={"colors.primary": "#0B0E14", "rounded.full": "12"},
+    )
+
+    reparsed = parse_design_md(design_md_path.read_text(encoding="utf-8"))
+    system = await _system_by_slug("default")
+    assert system.front_matter_raw == reparsed.front_matter_raw
+    assert system.title == reparsed.title
+    assert system.description == reparsed.description
+    assert system.spec_version == reparsed.spec_version
+    assert system.front_matter_extras == reparsed.front_matter_extras
+    assert system.guide_markdown == reparsed.guide_markdown
+    assert await _token_rows(system.id) == {
+        row.token_path: row.value for row in reparsed.tokens
+    }

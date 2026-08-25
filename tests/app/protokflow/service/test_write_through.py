@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import hashlib
 import os
@@ -14,6 +15,7 @@ from sqlalchemy.orm import SessionTransaction
 
 from backend.app.protokflow.core.design_md import parse_design_md, split_front_matter
 from backend.app.protokflow.core.errors import (
+    ConcurrentModificationError,
     MissingSourceFileError,
     UnknownDesignSystemError,
     UnknownTokenPathError,
@@ -501,3 +503,78 @@ async def test_commit_failure_leaves_file_ahead_of_database(
     assert (await _token_rows(system.id))["colors.primary"] == "#111111"
     assert system.source_digest == digest_before
     assert system.source_digest != hashlib.sha256(patched).hexdigest()
+
+
+async def test_external_modification_raises_concurrent_modification_error(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """An external edit changing the file digest before patch must be rejected."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+    system_before = await _system_by_slug("default")
+    expected_digest = system_before.source_digest
+
+    # External modification: user/editor touches the file directly
+    external_content = _DESIGN_MD.replace("#111111", "#999999")
+    design_md_path.write_text(external_content, encoding="utf-8")
+    found_digest = hashlib.sha256(external_content.encode("utf-8")).hexdigest()
+
+    with pytest.raises(ConcurrentModificationError) as exc_info:
+        await design_system_service.apply_token_patch(
+            repo_root=tmp_path,
+            slug="default",
+            token_patches={"colors.primary": "#0B0E14"},
+        )
+
+    error_msg = str(exc_info.value)
+    assert "default" in error_msg
+    assert expected_digest is not None
+    assert expected_digest in error_msg
+    assert found_digest in error_msg
+    assert "refetch" in error_msg
+
+    # Verify external file was not clobbered by the failed patch
+    assert design_md_path.read_text(encoding="utf-8") == external_content
+    # Verify DB still holds the pre-modification state
+    system_after = await _system_by_slug("default")
+    assert system_after.source_digest == expected_digest
+    assert (await _token_rows(system_after.id))["colors.primary"] == "#111111"
+
+
+async def test_concurrent_token_patches_are_serialized_without_lost_updates(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """Concurrent in-process patches on the same slug must serialize and preserve all updates."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    # Launch two concurrent patches on disjoint tokens
+    results = await asyncio.gather(
+        design_system_service.apply_token_patch(
+            repo_root=tmp_path,
+            slug="default",
+            token_patches={"colors.primary": "#0B0E14"},
+        ),
+        design_system_service.apply_token_patch(
+            repo_root=tmp_path,
+            slug="default",
+            token_patches={"typography.body.fontSize": "18px"},
+        ),
+    )
+
+    assert len(results) == 2
+    patched_text = design_md_path.read_text(encoding="utf-8")
+    assert "primary: '#0B0E14'" in patched_text
+    assert "fontSize: '18px'" in patched_text
+
+    system = await _system_by_slug("default")
+    tokens = await _token_rows(system.id)
+    assert tokens["colors.primary"] == "#0B0E14"
+    assert tokens["typography.body.fontSize"] == "18px"
+    assert (
+        system.source_digest == hashlib.sha256(patched_text.encode("utf-8")).hexdigest()
+    )

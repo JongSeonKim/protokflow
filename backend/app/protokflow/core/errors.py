@@ -98,3 +98,7 @@ class MissingSourceFileError(StorageLayerError):
 
 class TokenReparentingError(StorageLayerError):
     """Raised when token replacement would silently re-parent tokens across systems."""
+
+
+class ConcurrentModificationError(StorageLayerError):
+    """Raised when a design system's source file was modified concurrently or externally."""

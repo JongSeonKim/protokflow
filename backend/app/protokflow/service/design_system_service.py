@@ -22,6 +22,7 @@ from backend.app.protokflow.core.discovery import (
     discover_design_files,
 )
 from backend.app.protokflow.core.errors import (
+    ConcurrentModificationError,
     InvalidEncodingError,
     MissingSourceFileError,
     UnknownDesignSystemError,
@@ -253,6 +254,16 @@ def _patch_and_write(
 class DesignSystemService:
     """Design system service class."""
 
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _lock_for(self, slug: str) -> asyncio.Lock:
+        lock = self._locks.get(slug)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[slug] = lock
+        return lock
+
     @staticmethod
     async def index_all(*, repo_root: Path) -> list[DesignSystem]:
         """
@@ -269,8 +280,8 @@ class DesignSystemService:
 
         return await _persist_design_files(parsed_files)
 
-    @staticmethod
     async def apply_token_patch(
+        self,
         *,
         repo_root: Path,
         slug: str,
@@ -289,29 +300,38 @@ class DesignSystemService:
         :return:
         """
         root = Path(repo_root).resolve()
-        async with db.async_db_session() as session:
-            system = await design_system_dao.get_by_slug(session, slug)
-        if system is None:
-            raise UnknownDesignSystemError(f"design system not found: {slug}")
-        if system.source_path is None:
-            raise UnbackedDesignSystemError(
-                f"design system '{slug}' has no linked DESIGN.md file; "
-                f"token patches require a file-backed system"
-            )
+        async with self._lock_for(slug):
+            async with db.async_db_session() as session:
+                system = await design_system_dao.get_by_slug(session, slug)
+            if system is None:
+                raise UnknownDesignSystemError(f"design system not found: {slug}")
+            if system.source_path is None:
+                raise UnbackedDesignSystemError(
+                    f"design system '{slug}' has no linked DESIGN.md file; "
+                    f"token patches require a file-backed system"
+                )
 
-        source_path = root / system.source_path
-        source = DiscoveredDesignFile(slug=slug, path=source_path)
-        _, _, current = await asyncio.to_thread(_read_design_file, source)
-        written = await asyncio.to_thread(
-            _patch_and_write,
-            slug,
-            system.source_path,
-            source_path,
-            current,
-            token_patches,
-        )
-        persisted = await _persist_design_files([written])
-        return persisted[0]
+            source_path = root / system.source_path
+            source = DiscoveredDesignFile(slug=slug, path=source_path)
+            content, _, current = await asyncio.to_thread(_read_design_file, source)
+            disk_digest = hashlib.sha256(content).hexdigest()
+            if system.source_digest is not None and disk_digest != system.source_digest:
+                raise ConcurrentModificationError(
+                    f"source file for design system '{slug}' was modified concurrently "
+                    f"(expected digest '{system.source_digest}', found '{disk_digest}'); "
+                    f"refetch latest state and retry"
+                )
+
+            written = await asyncio.to_thread(
+                _patch_and_write,
+                slug,
+                system.source_path,
+                source_path,
+                current,
+                token_patches,
+            )
+            persisted = await _persist_design_files([written])
+            return persisted[0]
 
 
 design_system_service: DesignSystemService = DesignSystemService()

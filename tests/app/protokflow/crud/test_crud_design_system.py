@@ -2,23 +2,15 @@
 
 from __future__ import annotations
 
-import ast
-import inspect
-from textwrap import dedent
-
 import pytest
 
-import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.protokflow.crud.crud_design_system import (
-    CRUDDesignSystem,
-    design_system_dao,
-)
+from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.model import DesignSystem
-from backend.common.model import DateTimeMixin, LogicalDeleteMixin
+from tests.support.sentinel import generate_model_sentinels
 
 
 async def test_upsert_design_system_creates_slug_with_ulid(
@@ -167,32 +159,32 @@ async def test_front_matter_raw_round_trips_comments_and_blank_lines(
     assert loaded.front_matter_raw == raw
 
 
-def test_upsert_update_path_assigns_every_file_driven_column() -> None:
-    """Guard: a new DesignSystem column must be added to the upsert update path."""
-    function = ast.parse(dedent(inspect.getsource(CRUDDesignSystem.upsert)))
-    assigned = {
-        target.attr
-        for node in ast.walk(function)
-        if isinstance(node, ast.Assign)
-        for target in node.targets
-        if isinstance(target, ast.Attribute)
-        and isinstance(node.value, ast.Attribute)
-        and target.attr == node.value.attr
-    }
+async def test_upsert_update_path_persists_every_file_driven_column(
+    test_db: AsyncSession,
+) -> None:
+    """Guard: upsert must persist updates for all file-driven columns to the database."""
+    initial = DesignSystem(slug="drift-sentinel", title="Initial Title")
+    await design_system_dao.create(test_db, initial)
+    test_db.expire_all()
+
     ownership_excluded = {"id", "slug", "derived_from_id"}
-    audit_columns = {
-        name
-        for mixin in (DateTimeMixin, LogicalDeleteMixin)
-        for name in getattr(mixin, "__annotations__", {})
-    }
-    mapper_columns = {
-        attribute.key for attribute in sa.inspect(DesignSystem).column_attrs
-    }
-
-    missing = mapper_columns - ownership_excluded - audit_columns - assigned
-
-    assert not missing, (
-        f"CRUDDesignSystem.upsert update path does not assign column(s): "
-        f"{sorted(missing)}; new columns must be assigned or added to the "
-        f"ownership exclusion set"
+    file_driven_sentinels = generate_model_sentinels(
+        DesignSystem, excluded=ownership_excluded
     )
+
+    assert file_driven_sentinels, "Expected at least one file-driven column to test"
+
+    update_payload = DesignSystem(slug="drift-sentinel", **file_driven_sentinels)
+    await design_system_dao.upsert(test_db, update_payload)
+
+    test_db.expire_all()
+    persisted = await design_system_dao.get_by_slug(test_db, "drift-sentinel")
+
+    assert persisted is not None
+    for col_name, sentinel_val in file_driven_sentinels.items():
+        persisted_val = getattr(persisted, col_name)
+        assert persisted_val == sentinel_val, (
+            f"CRUDDesignSystem.upsert did not persist column {col_name!r}: "
+            f"got {persisted_val!r}, expected {sentinel_val!r}. "
+            f"If this column is not file-driven, add it to ownership_excluded."
+        )

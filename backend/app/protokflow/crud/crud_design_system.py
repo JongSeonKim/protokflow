@@ -39,17 +39,25 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
 
         return obj
 
-    async def upsert(self, db: AsyncSession, obj: DesignSystem) -> DesignSystem:
+    async def upsert(
+        self,
+        db: AsyncSession,
+        obj: DesignSystem,
+        *,
+        existing: DesignSystem | None = None,
+    ) -> DesignSystem:
         """
         Create or update a design system selected by its unique slug
 
         :param db: Database session
         :param obj: Design system instance carrying the desired state
+        :param existing: Row already loaded for obj.slug, skipping the lookup
         File-driven re-index owns file-derived columns only; provenance columns
         (``derived_from_id``) are preserved.
         :return:
         """
-        existing = await self.get_by_slug(db, obj.slug)
+        if existing is None:
+            existing = await self.get_by_slug(db, obj.slug)
         if existing is None:
             return await self.create(db, obj)
 
@@ -81,6 +89,8 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
 
         Tokens are removed by the design_tokens foreign key (ON DELETE CASCADE);
         DB-only rows (source_path NULL) and rows bound to other roots are kept.
+        An empty keep_slugs set deletes every file-backed row of the root —
+        the every-file-deleted path.
 
         :param db: Database session
         :param source_root: Repository root the discovery set belongs to
@@ -90,9 +100,8 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
         statement = sa.delete(DesignSystem).where(
             DesignSystem.source_path.is_not(None),
             DesignSystem.source_root == source_root,
+            DesignSystem.slug.not_in(keep_slugs),
         )
-        if keep_slugs:
-            statement = statement.where(DesignSystem.slug.not_in(keep_slugs))
         result = cast(CursorResult[Any], await db.execute(statement))
         return result.rowcount
 

@@ -62,13 +62,14 @@ async def _persist_token_patch(written: ParsedDesignFile) -> DesignSystem:
     the next index run re-imports it if the file is still present.
     """
     async with db.async_db_session.begin() as session:
-        if await design_system_dao.get_by_slug(session, written.slug) is None:
+        existing = await design_system_dao.get_by_slug(session, written.slug)
+        if existing is None:
             raise UnknownDesignSystemError(
                 f"design system '{written.slug}' was deleted while its source "
                 f"file was being patched; the patched file stays ahead and the "
                 f"next index run will re-import it"
             )
-        return await upsert_parsed_file(session, written)
+        return await upsert_parsed_file(session, written, existing=existing)
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -193,9 +194,8 @@ def _patched_parse(
 
 def _patch_and_write(
     slug: str,
-    source_root: str,
+    repo_root: Path,
     source_path_value: str,
-    source_path: Path,
     current: ParsedDesignSystem,
     token_patches: Mapping[str, str],
     entry_digest: str,
@@ -204,10 +204,12 @@ def _patch_and_write(
 
     Serialization is the most expensive step in a token patch, so it shares the
     worker thread with the file write instead of blocking the loop that serves
-    the preview. entry_digest is the CAS baseline observed after entry-time
-    reconciliation; a writer landing before the swap raises
+    the preview. entry_digest is the CAS baseline observed at entry — the
+    reconciliation snapshot's digest, or the digest of the post-entry read;
+    a writer landing before the swap raises
     ConcurrentModificationError instead of clobbering its change.
     """
+    source_path = repo_root / source_path_value
     patched_text = serialize_design_md(
         front_matter_raw=current.front_matter_raw,
         closing_fence=current.closing_fence,
@@ -220,7 +222,7 @@ def _patch_and_write(
     stat = _atomic_write_bytes(source_path, patched_bytes, expected_digest=entry_digest)
     return ParsedDesignFile(
         slug=slug,
-        source_root=source_root,
+        source_root=repo_root.as_posix(),
         source_path=source_path_value,
         source_digest=digest,
         source_mtime_ns=stat.st_mtime_ns,
@@ -361,6 +363,7 @@ class DesignSystemService:
                     f"'{system.source_root}' but the patch targets "
                     f"'{root.as_posix()}'; re-index against this root to rebind it"
                 )
+            source_path_value = system.source_path
 
             reconciled = await reconcile_design_system(
                 root=root, system=system, for_patch=True
@@ -370,17 +373,26 @@ class DesignSystemService:
                 # file or bump its mtime; return the reconciled state unchanged.
                 return reconciled.system
 
-            source_path = root / system.source_path
-            source = DiscoveredDesignFile(slug=slug, path=source_path)
-            content, _, current = await asyncio.to_thread(read_design_file, source)
-            entry_digest = hashlib.sha256(content).hexdigest()
+            snapshot = reconciled.snapshot
+            if snapshot is None:
+                # The stat pre-check matched, so the stored digest already
+                # describes the current bytes; read once for the parse the
+                # patch itself needs.
+                source = DiscoveredDesignFile(slug=slug, path=root / source_path_value)
+                content, _, current = await asyncio.to_thread(read_design_file, source)
+                entry_digest = hashlib.sha256(content).hexdigest()
+            else:
+                # Reconciliation just read and parsed the changed source, so
+                # its snapshot is both the patch baseline and the CAS digest;
+                # the file is not read again here.
+                current = snapshot.parsed
+                entry_digest = snapshot.source_digest
 
             written = await asyncio.to_thread(
                 _patch_and_write,
                 slug,
-                root.as_posix(),
-                system.source_path,
-                source_path,
+                root,
+                source_path_value,
                 current,
                 token_patches,
                 entry_digest,

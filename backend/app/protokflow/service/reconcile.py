@@ -140,11 +140,14 @@ def build_design_tokens(
 
 
 async def upsert_parsed_file(
-    session: AsyncSession, parsed_file: ParsedDesignFile
+    session: AsyncSession,
+    parsed_file: ParsedDesignFile,
+    *,
+    existing: DesignSystem | None = None,
 ) -> DesignSystem:
     """Upsert one parsed file and replace its tokens on the caller's session."""
     design_system = await design_system_dao.upsert(
-        session, build_design_system(parsed_file)
+        session, build_design_system(parsed_file), existing=existing
     )
     await design_token_dao.replace(
         session,
@@ -160,6 +163,7 @@ class ReconciledSystem:
 
     system: DesignSystem
     stale: bool
+    snapshot: ParsedDesignFile | None = None
 
 
 def stat_source(path: Path) -> os.stat_result | None:
@@ -245,10 +249,11 @@ async def reconcile_design_system(
         parsed=parsed,
     )
     async with db.async_db_session.begin() as session:
-        if await design_system_dao.get_by_slug(session, system.slug) is None:
+        existing = await design_system_dao.get_by_slug(session, system.slug)
+        if existing is None:
             raise UnknownDesignSystemError(
                 f"design system '{system.slug}' was deleted while its source "
                 f"was being reconciled"
             )
-        refreshed = await upsert_parsed_file(session, parsed_file)
-    return ReconciledSystem(system=refreshed, stale=False)
+        refreshed = await upsert_parsed_file(session, parsed_file, existing=existing)
+    return ReconciledSystem(system=refreshed, stale=False, snapshot=parsed_file)

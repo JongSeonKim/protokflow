@@ -239,13 +239,15 @@ async def test_indexing_rolls_back_all_systems_when_persistence_fails(
     upsert_calls = 0
 
     async def fail_on_second_upsert(
-        session: AsyncSession, design_system: DesignSystem
+        session: AsyncSession,
+        design_system: DesignSystem,
+        existing: DesignSystem | None = None,
     ) -> DesignSystem:
         nonlocal upsert_calls
         upsert_calls += 1
         if upsert_calls == 2:
             raise RuntimeError("test persistence failure")
-        return await real_upsert(session, design_system)
+        return await real_upsert(session, design_system, existing=existing)
 
     monkeypatch.setattr(design_system_dao, "upsert", fail_on_second_upsert)
 

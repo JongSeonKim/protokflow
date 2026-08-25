@@ -24,6 +24,19 @@ class FencedYamlBlockError(DesignMdError):
     """
 
 
+class DuplicateSlugError(DesignMdError):
+    """Raised when discovery yields multiple files claiming the same slug.
+
+    This includes the root DESIGN.md and design/default.md claiming the
+    default slug. Resolve the collision by renaming the sibling file or
+    removing one of the duplicates.
+    """
+
+
+class InvalidEncodingError(DesignMdError):
+    """Raised when a DESIGN.md file is not valid UTF-8 text."""
+
+
 class UnterminatedFrontMatterError(DesignMdError):
     """Raised when an opening front matter fence ('---') lacks a matching closing fence."""
 

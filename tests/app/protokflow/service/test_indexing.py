@@ -23,7 +23,7 @@ from backend.app.protokflow.service.design_system_service import (
     _build_design_tokens,
     design_system_service,
 )
-from backend.app.protokflow.service.errors import TokenReparentingError
+from backend.app.protokflow.error.storage import TokenReparentingError
 from backend.database import db
 
 

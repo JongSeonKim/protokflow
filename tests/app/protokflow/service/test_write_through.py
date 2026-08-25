@@ -19,7 +19,7 @@ from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.core.errors import UnknownTokenPathError
 from backend.app.protokflow.service import design_system_service as service_module
 from backend.app.protokflow.service.design_system_service import design_system_service
-from backend.app.protokflow.service.errors import (
+from backend.app.protokflow.error.storage import (
     ConcurrentModificationError,
     MissingSourceFileError,
     SourceRootMismatchError,

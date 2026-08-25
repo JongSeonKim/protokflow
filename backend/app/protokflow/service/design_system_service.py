@@ -29,7 +29,7 @@ from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem, DesignToken
 from backend.app.protokflow.model.types import utcnow
-from backend.app.protokflow.service.errors import (
+from backend.app.protokflow.error.storage import (
     ConcurrentModificationError,
     MissingSourceFileError,
     SourceRootMismatchError,

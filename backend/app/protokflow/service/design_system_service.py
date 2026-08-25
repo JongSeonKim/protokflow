@@ -1,4 +1,4 @@
-"""Index DESIGN.md files into the design-system storage tables."""
+"""Index DESIGN.md files into design-system storage and patch tokens back to source."""
 
 from __future__ import annotations
 

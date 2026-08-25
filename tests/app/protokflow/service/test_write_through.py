@@ -10,6 +10,7 @@ from stat import S_ISDIR
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import SessionTransaction
 
 from backend.app.protokflow.core.design_md import parse_design_md, split_front_matter
 from backend.app.protokflow.core.errors import (
@@ -201,7 +202,7 @@ async def test_failed_file_write_preserves_original_file_and_database(
     assert list(tmp_path.iterdir()) == [design_md_path]
 
 
-async def test_failed_database_persist_leaves_file_ahead_of_database(
+async def test_pre_commit_failure_leaves_file_ahead_of_database(
     tmp_path: Path,
     test_db: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -433,3 +434,70 @@ async def test_derived_parse_matches_a_full_reparse(
     assert await _token_rows(system.id) == {
         row.token_path: row.value for row in reparsed.tokens
     }
+
+
+async def test_commit_failure_leaves_file_ahead_of_database(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure at the commit itself must still leave the file as the newer copy."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+    digest_before = (await _system_by_slug("default")).source_digest
+
+    replaced: list[str] = []
+    real_replace = design_token_dao.replace
+
+    async def spying_replace(
+        db_session: AsyncSession, design_system_id: str, tokens: object
+    ) -> object:
+        rows = await real_replace(db_session, design_system_id, tokens)  # type: ignore[arg-type]
+        replaced.append(design_system_id)
+        return rows
+
+    # Session.flush() drives SessionTransaction.commit too, so failing every
+    # commit would abort before the token replacement ever runs. Only the commit
+    # the transaction context manager performs on exit may fail here.
+    real_commit = SessionTransaction.commit
+    real_exit = SessionTransaction.__exit__
+    exiting = False
+
+    def tracking_exit(self: SessionTransaction, *exc: object) -> None:
+        nonlocal exiting
+        exiting = True
+        try:
+            real_exit(self, *exc)  # type: ignore[arg-type]
+        finally:
+            exiting = False
+
+    def failing_commit(self: SessionTransaction, _to_root: bool = False) -> None:
+        if not exiting:
+            return real_commit(self, _to_root)
+        raise RuntimeError("simulated commit failure")
+
+    monkeypatch.setattr(design_token_dao, "replace", spying_replace)
+    monkeypatch.setattr(SessionTransaction, "__exit__", tracking_exit)
+    monkeypatch.setattr(SessionTransaction, "commit", failing_commit)
+
+    with pytest.raises(RuntimeError, match="simulated commit failure"):
+        await design_system_service.apply_token_patch(
+            repo_root=tmp_path,
+            slug="default",
+            token_patches={"colors.primary": "#0B0E14"},
+        )
+
+    # Restore the commit before querying, so the assertions use a working session.
+    monkeypatch.undo()
+
+    # The real token replacement ran; only the commit failed.
+    assert replaced == [(await _system_by_slug("default")).id]
+
+    patched = design_md_path.read_bytes()
+    assert b"#0B0E14" in patched
+    system = await _system_by_slug("default")
+    assert (await _token_rows(system.id))["colors.primary"] == "#111111"
+    assert system.source_digest == digest_before
+    assert system.source_digest != hashlib.sha256(patched).hexdigest()

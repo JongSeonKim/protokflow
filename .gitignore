@@ -57,6 +57,7 @@ alembic.ini.bak
 
 # temp
 temp/
+.*.tmp
 
 # IP geolocation database (DB-IP Lite MMDB, ~124 MB, refreshed monthly)
 backend/data/dbip-city-lite.mmdb

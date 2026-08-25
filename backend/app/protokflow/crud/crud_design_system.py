@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any, cast
+
+import sqlalchemy as sa
+from sqlalchemy import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -63,6 +68,33 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
         await db.flush()
 
         return existing
+
+    async def delete_orphan_sources(
+        self,
+        db: AsyncSession,
+        *,
+        source_root: str,
+        keep_slugs: Sequence[str],
+    ) -> int:
+        """
+        Hard-delete file-backed rows of one repository root missing from discovery
+
+        Tokens are removed by the design_tokens foreign key (ON DELETE CASCADE);
+        DB-only rows (source_path NULL) and rows bound to other roots are kept.
+
+        :param db: Database session
+        :param source_root: Repository root the discovery set belongs to
+        :param keep_slugs: Slugs discovered in the current run
+        :return: Number of deleted design-system rows
+        """
+        statement = sa.delete(DesignSystem).where(
+            DesignSystem.source_path.is_not(None),
+            DesignSystem.source_root == source_root,
+        )
+        if keep_slugs:
+            statement = statement.where(DesignSystem.slug.not_in(keep_slugs))
+        result = cast(CursorResult[Any], await db.execute(statement))
+        return result.rowcount
 
 
 design_system_dao: CRUDDesignSystem = CRUDDesignSystem(DesignSystem)

@@ -8,15 +8,12 @@ import hashlib
 import os
 import shutil
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from backend.app.protokflow.core.design_md import (
     ParsedDesignSystem,
-    parse_design_md,
     serialize_design_md,
     split_front_matter,
 )
@@ -24,17 +21,22 @@ from backend.app.protokflow.core.discovery import (
     DiscoveredDesignFile,
     discover_design_files,
 )
-from backend.app.protokflow.error.design_md import InvalidEncodingError
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem, DesignToken
-from backend.app.protokflow.model.types import utcnow
+from backend.app.protokflow.service.reconcile import (
+    ParsedDesignFile,
+    parse_design_file,
+    read_design_file,
+    read_source_bytes,
+    reconcile_design_system,
+    upsert_parsed_file,
+)
 from backend.app.protokflow.error.storage import (
     ConcurrentModificationError,
     MissingSourceFileError,
     SourceRootMismatchError,
     SourceWriteError,
-    TokenReparentingError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
     UnsupportedSourceLinkError,
@@ -43,122 +45,15 @@ from backend.database import db
 
 
 @dataclass(frozen=True, slots=True)
-class _ParsedDesignFile:
-    """Parsed source data prepared before opening the database transaction."""
+class DesignSystemDetail:
+    """Query result: the system row, its tokens, and the derived stale flag."""
 
-    slug: str
-    source_root: str
-    source_path: str
-    source_digest: str
-    source_mtime_ns: int
-    source_size: int
-    parsed: ParsedDesignSystem
+    system: DesignSystem
+    tokens: Sequence[DesignToken]
+    stale: bool
 
 
-def _parse_design_content(path: Path, content: bytes) -> ParsedDesignSystem:
-    """Decode and parse DESIGN.md bytes without database access."""
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise InvalidEncodingError(f"{path} is not valid UTF-8: {error}") from error
-    return parse_design_md(text)
-
-
-def _read_design_file(
-    design_file: DiscoveredDesignFile,
-) -> tuple[bytes, os.stat_result, ParsedDesignSystem]:
-    """Read one design file, mapping a missing source to a domain error.
-
-    The bytes and the metadata are taken from one open descriptor so that the
-    digest, mtime, and size recorded for a design system always describe the
-    same file version. Reading and stat-ing separately lets an external save
-    land between them, which stores the digest of one version beside the
-    metadata of another and defeats the change pre-check.
-    """
-    try:
-        with design_file.path.open("rb") as handle:
-            content = handle.read()
-            stat = os.fstat(handle.fileno())
-    except (FileNotFoundError, IsADirectoryError) as error:
-        raise MissingSourceFileError(
-            f"source file for design system '{design_file.slug}' is missing: "
-            f"{design_file.path}"
-        ) from error
-    return content, stat, _parse_design_content(design_file.path, content)
-
-
-def _parse_design_file(
-    repo_root: Path, design_file: DiscoveredDesignFile
-) -> _ParsedDesignFile:
-    """Read, digest, and parse one discovered file without database access."""
-    content, stat, parsed = _read_design_file(design_file)
-    return _ParsedDesignFile(
-        slug=design_file.slug,
-        source_root=repo_root.as_posix(),
-        source_path=design_file.path.relative_to(repo_root).as_posix(),
-        source_digest=hashlib.sha256(content).hexdigest(),
-        source_mtime_ns=stat.st_mtime_ns,
-        source_size=stat.st_size,
-        parsed=parsed,
-    )
-
-
-def _build_design_system(parsed_file: _ParsedDesignFile) -> DesignSystem:
-    """Build a storage model from already validated source data."""
-    parsed = parsed_file.parsed
-    return DesignSystem(
-        slug=parsed_file.slug,
-        title=parsed.title or parsed_file.slug,
-        description=parsed.description,
-        spec_version=parsed.spec_version,
-        front_matter_extras=parsed.front_matter_extras,
-        front_matter_raw=parsed.front_matter_raw or "",
-        guide_markdown=parsed.guide_markdown,
-        source_root=parsed_file.source_root,
-        source_path=parsed_file.source_path,
-        source_digest=parsed_file.source_digest,
-        source_mtime_ns=parsed_file.source_mtime_ns,
-        source_size=parsed_file.source_size,
-        synced_at=utcnow(),
-    )
-
-
-def _build_design_tokens(
-    parsed_file: _ParsedDesignFile, design_system_id: str
-) -> list[DesignToken]:
-    """Build storage token models from validated source data."""
-    tokens = [
-        DesignToken(
-            design_system_id,
-            token.tier,
-            token.token_path,
-            token.value,
-        )
-        for token in parsed_file.parsed.tokens
-    ]
-    for token in tokens:
-        if token.design_system_id != design_system_id:
-            raise TokenReparentingError(
-                f"cannot reparent token '{token.token_path}' from design system "
-                f"'{token.design_system_id}' to '{design_system_id}'"
-            )
-    return tokens
-
-
-async def _persist_design_files(
-    parsed_files: list[_ParsedDesignFile],
-) -> list[DesignSystem]:
-    """Upsert systems and replace their tokens in one caller-visible transaction."""
-    if not parsed_files:
-        return []
-    async with db.async_db_session.begin() as session:
-        systems: list[DesignSystem] = []
-        for parsed_file in parsed_files:
-            systems.append(await _upsert_parsed_file(session, parsed_file))
-        return systems
-
-
-async def _persist_token_patch(written: _ParsedDesignFile) -> DesignSystem:
+async def _persist_token_patch(written: ParsedDesignFile) -> DesignSystem:
     """Persist one patched file without reviving a row deleted mid-patch.
 
     The slug's row is re-checked inside the write transaction: the file has
@@ -173,22 +68,7 @@ async def _persist_token_patch(written: _ParsedDesignFile) -> DesignSystem:
                 f"file was being patched; the patched file stays ahead and the "
                 f"next index run will re-import it"
             )
-        return await _upsert_parsed_file(session, written)
-
-
-async def _upsert_parsed_file(
-    session: AsyncSession, parsed_file: _ParsedDesignFile
-) -> DesignSystem:
-    """Upsert one parsed file and replace its tokens on the caller's session."""
-    design_system = await design_system_dao.upsert(
-        session, _build_design_system(parsed_file)
-    )
-    await design_token_dao.replace(
-        session,
-        design_system.id,
-        _build_design_tokens(parsed_file, design_system.id),
-    )
-    return design_system
+        return await upsert_parsed_file(session, written)
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -209,12 +89,21 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
+def _atomic_write_bytes(
+    path: Path, data: bytes, *, expected_digest: str | None = None
+) -> os.stat_result:
     """Write bytes to a file atomically via a same-directory temporary file.
 
     The replacement is written beside the target and swapped in via rename
     to ensure atomic updates. File data and parent directory entries are synced
     to disk around the rename operation.
+
+    When expected_digest is provided, the original is re-read just before the
+    temporary file is created and compared against it (CAS): a mismatch means
+    a writer landed in the window between the entry pre-check and this write,
+    so ConcurrentModificationError is raised and nothing is replaced. The
+    remaining verify-to-replace window cannot be eliminated on POSIX; the
+    contract is to keep it minimal and fail safely on mismatch.
 
     Symlinks and hard links are rejected before writing to prevent breaking link
     targets during directory entry replacement. Disk failures raise
@@ -239,6 +128,15 @@ def _atomic_write_bytes(path: Path, data: bytes) -> os.stat_result:
             f"DESIGN.md source is a symlink or hard link and cannot be "
             f"atomically replaced: {path}"
         )
+    if expected_digest is not None:
+        current, _ = read_source_bytes(path)
+        current_digest = hashlib.sha256(current).hexdigest()
+        if current_digest != expected_digest:
+            raise ConcurrentModificationError(
+                f"source file changed between the entry pre-check and the "
+                f"atomic write (expected digest '{expected_digest}', found "
+                f"'{current_digest}'); refetch latest state and retry"
+            )
     try:
         descriptor, temp_name = tempfile.mkstemp(
             dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
@@ -275,9 +173,9 @@ def _patched_parse(
     """Derive the parsed form of a patched document without re-parsing it.
 
     A token path always resolves inside a foundation or component group, while
-    the title, description, and spec version come from the modeled scalars and
-    the extras from every other key. A value patch therefore cannot reach any
-    field except the raw front matter text and the patched token values, so
+    the title, description, and spec version come from the modeled scalars
+    and the extras from every other key. A value patch therefore cannot reach
+    any field except the raw front matter text and the patched token values, so
     re-running the YAML parser over the emitted bytes would only reproduce what
     the caller already holds.
     """
@@ -300,12 +198,15 @@ def _patch_and_write(
     source_path: Path,
     current: ParsedDesignSystem,
     token_patches: Mapping[str, str],
-) -> _ParsedDesignFile:
+    entry_digest: str,
+) -> ParsedDesignFile:
     """Serialize, write, and describe a patched document off the event loop.
 
     Serialization is the most expensive step in a token patch, so it shares the
     worker thread with the file write instead of blocking the loop that serves
-    the preview.
+    the preview. entry_digest is the CAS baseline observed after entry-time
+    reconciliation; a writer landing before the swap raises
+    ConcurrentModificationError instead of clobbering its change.
     """
     patched_text = serialize_design_md(
         front_matter_raw=current.front_matter_raw,
@@ -316,8 +217,8 @@ def _patch_and_write(
     )
     patched_bytes = patched_text.encode("utf-8")
     digest = hashlib.sha256(patched_bytes).hexdigest()
-    stat = _atomic_write_bytes(source_path, patched_bytes)
-    return _ParsedDesignFile(
+    stat = _atomic_write_bytes(source_path, patched_bytes, expected_digest=entry_digest)
+    return ParsedDesignFile(
         slug=slug,
         source_root=source_root,
         source_path=source_path_value,
@@ -346,16 +247,72 @@ class DesignSystemService:
         """
         Index every DESIGN.md file discovered in a repository
 
+        File-backed rows bound to this repository root that are absent from
+        the discovery set are hard-deleted in the same transaction as the
+        upserts (KTD11); an empty discovery set still deletes orphans, because
+        it is the every-file-deleted path.
+
         :param repo_root: Repository root path
         :return:
         """
         root = Path(repo_root).resolve()
+        discovered = discover_design_files(root)
         parsed_files = [
-            _parse_design_file(root, design_file)
-            for design_file in discover_design_files(root)
+            parse_design_file(root, design_file) for design_file in discovered
         ]
 
-        return await _persist_design_files(parsed_files)
+        async with db.async_db_session.begin() as session:
+            systems = [
+                await upsert_parsed_file(session, parsed_file)
+                for parsed_file in parsed_files
+            ]
+            await design_system_dao.delete_orphan_sources(
+                session,
+                source_root=root.as_posix(),
+                keep_slugs=[design_file.slug for design_file in discovered],
+            )
+        return systems
+
+    async def get(self, *, repo_root: Path, slug: str) -> DesignSystemDetail:
+        """
+        Query one design system with its tokens after reconciling its source
+
+        The (mtime_ns, size) pre-check runs first (KTD6): external changes are
+        absorbed by re-indexing, a touched-but-identical file refreshes
+        metadata only, and a missing file keeps the persisted row and reports
+        stale=True as a query-time verdict — no staleness column is stored
+        (KTD11).
+
+        :param repo_root: Repository root path
+        :param slug: Design system slug
+        :return:
+        """
+        root = Path(repo_root).resolve()
+        async with self._lock_for(slug):
+            async with db.async_db_session() as session:
+                system = await design_system_dao.get_by_slug(session, slug)
+            if system is None:
+                raise UnknownDesignSystemError(f"design system not found: {slug}")
+            if system.source_path is not None and (
+                system.source_root is None or system.source_root != root.as_posix()
+            ):
+                raise SourceRootMismatchError(
+                    f"design system '{slug}' was indexed from repository root "
+                    f"'{system.source_root}' but the query targets "
+                    f"'{root.as_posix()}'; re-index against this root to rebind it"
+                )
+            reconciled = await reconcile_design_system(
+                root=root, system=system, for_patch=False
+            )
+            async with db.async_db_session() as session:
+                tokens = list(
+                    await design_token_dao.get_all(session, reconciled.system.id)
+                )
+            return DesignSystemDetail(
+                system=reconciled.system,
+                tokens=tokens,
+                stale=reconciled.stale,
+            )
 
     async def apply_token_patch(
         self,
@@ -366,6 +323,15 @@ class DesignSystemService:
     ) -> DesignSystem:
         """
         Patch token values in a DESIGN.md file and write the change through to storage
+
+        Every entry passes the reconciliation pre-check first (KTD6), so an
+        external change that landed before the call — including a file left
+        ahead by a failed database commit (KTD9) — is absorbed and the patch
+        applies on top of the reconciled latest content. The concurrent-modification
+        error is reserved for a real race: a writer landing after the entry
+        pre-check but before the atomic write is caught by the CAS re-read and
+        the swap never happens. A missing source file rejects the patch with
+        MissingSourceFileError because a patch must always write the file.
 
         The file is the recovery source of truth, so the on-disk document is
         patched in-place first and the database is committed afterwards; a
@@ -378,14 +344,6 @@ class DesignSystemService:
         :param token_patches: Mapping of token paths to new values
         :return:
         """
-        if not token_patches:
-            # An empty patch changes nothing, so it must not rewrite the file or
-            # bump its mtime; return the current persisted state unchanged.
-            async with db.async_db_session() as session:
-                system = await design_system_dao.get_by_slug(session, slug)
-            if system is None:
-                raise UnknownDesignSystemError(f"design system not found: {slug}")
-            return system
         root = Path(repo_root).resolve()
         async with self._lock_for(slug):
             async with db.async_db_session() as session:
@@ -404,16 +362,18 @@ class DesignSystemService:
                     f"'{root.as_posix()}'; re-index against this root to rebind it"
                 )
 
+            reconciled = await reconcile_design_system(
+                root=root, system=system, for_patch=True
+            )
+            if not token_patches:
+                # An empty patch changes nothing, so it must not rewrite the
+                # file or bump its mtime; return the reconciled state unchanged.
+                return reconciled.system
+
             source_path = root / system.source_path
             source = DiscoveredDesignFile(slug=slug, path=source_path)
-            content, _, current = await asyncio.to_thread(_read_design_file, source)
-            disk_digest = hashlib.sha256(content).hexdigest()
-            if system.source_digest is not None and disk_digest != system.source_digest:
-                raise ConcurrentModificationError(
-                    f"source file for design system '{slug}' was modified concurrently "
-                    f"(expected digest '{system.source_digest}', found '{disk_digest}'); "
-                    f"refetch latest state and retry"
-                )
+            content, _, current = await asyncio.to_thread(read_design_file, source)
+            entry_digest = hashlib.sha256(content).hexdigest()
 
             written = await asyncio.to_thread(
                 _patch_and_write,
@@ -423,6 +383,7 @@ class DesignSystemService:
                 source_path,
                 current,
                 token_patches,
+                entry_digest,
             )
             return await _persist_token_patch(written)
 

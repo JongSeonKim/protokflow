@@ -18,6 +18,7 @@ from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.error.design_md import UnknownTokenPathError
 from backend.app.protokflow.service import design_system_service as service_module
+from backend.app.protokflow.service import reconcile as reconcile_module
 from backend.app.protokflow.service.design_system_service import design_system_service
 from backend.app.protokflow.error.storage import (
     ConcurrentModificationError,
@@ -313,16 +314,22 @@ async def test_db_only_system_rejects_patch(
 async def test_missing_source_file_raises_domain_error(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
+    """A patch against a deleted source is rejected with file and DB intact."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
     await design_system_service.index_all(repo_root=tmp_path)
+    system = await _system_by_slug("default")
     design_md_path.unlink()
 
     with pytest.raises(MissingSourceFileError, match="DESIGN.md"):
         await design_system_service.apply_token_patch(
             repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#000"}
         )
+
+    system_after = await _system_by_slug("default")
+    assert system_after.source_digest == system.source_digest
+    assert (await _token_rows(system_after.id))["colors.primary"] == "#111111"
 
 
 async def test_patch_rejects_repo_root_that_differs_from_indexed_root(
@@ -411,7 +418,7 @@ async def test_source_metadata_describes_one_file_version(
     )
     assert len(external_edit) != len(indexed)
 
-    real_parse = service_module._parse_design_content
+    real_parse = reconcile_module.parse_design_content
 
     def parse_after_external_save(path: Path, content: bytes) -> object:
         # An editor saves a longer document once the bytes have been read.
@@ -419,7 +426,7 @@ async def test_source_metadata_describes_one_file_version(
         return real_parse(path, content)
 
     monkeypatch.setattr(
-        service_module, "_parse_design_content", parse_after_external_save
+        reconcile_module, "parse_design_content", parse_after_external_save
     )
 
     await design_system_service.index_all(repo_root=tmp_path)
@@ -526,14 +533,14 @@ async def test_patch_parses_the_document_only_once(
     await design_system_service.index_all(repo_root=tmp_path)
 
     parses = 0
-    real_parse = service_module.parse_design_md
+    real_parse = reconcile_module.parse_design_md
 
     def counting_parse(text: str) -> object:
         nonlocal parses
         parses += 1
         return real_parse(text)
 
-    monkeypatch.setattr(service_module, "parse_design_md", counting_parse)
+    monkeypatch.setattr(reconcile_module, "parse_design_md", counting_parse)
 
     await design_system_service.apply_token_patch(
         repo_root=tmp_path, slug="default", token_patches=token_patches
@@ -637,41 +644,138 @@ async def test_commit_failure_leaves_file_ahead_of_database(
     assert system.source_digest != hashlib.sha256(patched).hexdigest()
 
 
-async def test_external_modification_raises_concurrent_modification_error(
+async def test_external_modification_before_entry_is_absorbed_into_patch(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
-    """An external edit changing the file digest before patch must be rejected."""
+    """An external edit before the patch entry is absorbed, then patched on top."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
     await design_system_service.index_all(repo_root=tmp_path)
-    system_before = await _system_by_slug("default")
-    expected_digest = system_before.source_digest
 
-    # External modification: user/editor touches the file directly
-    external_content = _DESIGN_MD.replace("#111111", "#999999")
+    # External modification lands before the patch enters: reconciliation must
+    # absorb it instead of rejecting the patch (KTD6).
+    external_content = _DESIGN_MD.replace("#222222", "#333333")
     design_md_path.write_text(external_content, encoding="utf-8")
-    found_digest = hashlib.sha256(external_content.encode("utf-8")).hexdigest()
 
-    with pytest.raises(ConcurrentModificationError) as exc_info:
+    updated = await design_system_service.apply_token_patch(
+        repo_root=tmp_path,
+        slug="default",
+        token_patches={"colors.primary": "#0B0E14"},
+    )
+
+    patched_text = design_md_path.read_text(encoding="utf-8")
+    # Both the external change and the patch survive in the file.
+    assert "secondary: '#333333'" in patched_text
+    assert "primary: '#0B0E14'" in patched_text
+
+    system = await _system_by_slug("default")
+    assert (
+        system.source_digest == hashlib.sha256(design_md_path.read_bytes()).hexdigest()
+    )
+    tokens = await _token_rows(system.id)
+    assert tokens["colors.primary"] == "#0B0E14"
+    assert tokens["colors.secondary"] == "#333333"
+    assert updated.source_digest == system.source_digest
+
+
+async def test_file_ahead_state_is_absorbed_by_next_patch(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a failed DB commit, the next patch reconciles and applies on top."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    real_commit = SessionTransaction.commit
+    real_exit = SessionTransaction.__exit__
+    exiting = False
+
+    def tracking_exit(self: SessionTransaction, *exc: object) -> None:
+        nonlocal exiting
+        exiting = True
+        try:
+            real_exit(self, *exc)  # type: ignore[arg-type]
+        finally:
+            exiting = False
+
+    def failing_commit(self: SessionTransaction, _to_root: bool = False) -> None:
+        if not exiting:
+            return real_commit(self, _to_root)
+        raise RuntimeError("simulated commit failure")
+
+    monkeypatch.setattr(SessionTransaction, "__exit__", tracking_exit)
+    monkeypatch.setattr(SessionTransaction, "commit", failing_commit)
+
+    with pytest.raises(RuntimeError, match="simulated commit failure"):
         await design_system_service.apply_token_patch(
             repo_root=tmp_path,
             slug="default",
             token_patches={"colors.primary": "#0B0E14"},
         )
 
-    error_msg = str(exc_info.value)
-    assert "default" in error_msg
-    assert expected_digest is not None
-    assert expected_digest in error_msg
-    assert found_digest in error_msg
-    assert "refetch" in error_msg
+    monkeypatch.undo()
 
-    # Verify external file was not clobbered by the failed patch
+    # The file is ahead of the DB; the next patch must reconcile first (KTD9).
+    await design_system_service.apply_token_patch(
+        repo_root=tmp_path,
+        slug="default",
+        token_patches={"colors.secondary": "#ABCDEF"},
+    )
+
+    patched_text = design_md_path.read_text(encoding="utf-8")
+    assert "primary: '#0B0E14'" in patched_text
+    assert "secondary: '#ABCDEF'" in patched_text
+    system = await _system_by_slug("default")
+    assert (
+        system.source_digest == hashlib.sha256(design_md_path.read_bytes()).hexdigest()
+    )
+    tokens = await _token_rows(system.id)
+    assert tokens["colors.primary"] == "#0B0E14"
+    assert tokens["colors.secondary"] == "#ABCDEF"
+
+
+async def test_concurrent_modification_in_write_window_raises_and_discards_temp(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A change landing between the entry pre-check and the atomic write is a real race."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+    system_before = await _system_by_slug("default")
+
+    external_content = _DESIGN_MD.replace("#222222", "#333333")
+    real_read = service_module.read_source_bytes
+
+    def read_that_lands_external_edit(path: Path) -> tuple[bytes, os.stat_result]:
+        if path == design_md_path:
+            # An external editor saves between the entry pre-check and the
+            # CAS re-read just before the temporary file is created.
+            design_md_path.write_text(external_content, encoding="utf-8")
+        return real_read(path)
+
+    monkeypatch.setattr(
+        service_module, "read_source_bytes", read_that_lands_external_edit
+    )
+
+    with pytest.raises(ConcurrentModificationError, match="refetch"):
+        await design_system_service.apply_token_patch(
+            repo_root=tmp_path,
+            slug="default",
+            token_patches={"colors.primary": "#0B0E14"},
+        )
+
+    # The external edit is preserved and no temporary file leaked.
     assert design_md_path.read_text(encoding="utf-8") == external_content
-    # Verify DB still holds the pre-modification state
+    assert [path.name for path in tmp_path.iterdir()] == ["DESIGN.md"]
     system_after = await _system_by_slug("default")
-    assert system_after.source_digest == expected_digest
+    assert system_after.source_digest == system_before.source_digest
     assert (await _token_rows(system_after.id))["colors.primary"] == "#111111"
 
 

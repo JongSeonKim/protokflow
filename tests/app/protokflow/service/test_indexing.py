@@ -19,9 +19,11 @@ from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.service.design_system_service import (
-    _ParsedDesignFile,
-    _build_design_tokens,
     design_system_service,
+)
+from backend.app.protokflow.service.reconcile import (
+    ParsedDesignFile,
+    build_design_tokens,
 )
 from backend.app.protokflow.error.storage import TokenReparentingError
 from backend.database import db
@@ -255,7 +257,7 @@ async def test_indexing_rolls_back_all_systems_when_persistence_fails(
 
 
 def test_build_design_tokens_builds_tokens_matching_design_system_id() -> None:
-    parsed_file = _ParsedDesignFile(
+    parsed_file = ParsedDesignFile(
         slug="default",
         source_root="/repo",
         source_path="DESIGN.md",
@@ -264,7 +266,7 @@ def test_build_design_tokens_builds_tokens_matching_design_system_id() -> None:
         source_size=10,
         parsed=parse_design_md(_design_md("Default", "#111")),
     )
-    tokens = _build_design_tokens(parsed_file, "sys-123")
+    tokens = build_design_tokens(parsed_file, "sys-123")
     assert len(tokens) == 1
     assert tokens[0].design_system_id == "sys-123"
     assert tokens[0].token_path == "colors.primary"
@@ -274,7 +276,7 @@ def test_build_design_tokens_builds_tokens_matching_design_system_id() -> None:
 def test_build_design_tokens_rejects_mismatched_reparenting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    parsed_file = _ParsedDesignFile(
+    parsed_file = ParsedDesignFile(
         slug="default",
         source_root="/repo",
         source_path="DESIGN.md",
@@ -293,4 +295,4 @@ def test_build_design_tokens_rejects_mismatched_reparenting(
     monkeypatch.setattr(DesignToken, "__init__", faulty_init)
 
     with pytest.raises(TokenReparentingError, match="cannot reparent"):
-        _build_design_tokens(parsed_file, "sys-123")
+        build_design_tokens(parsed_file, "sys-123")

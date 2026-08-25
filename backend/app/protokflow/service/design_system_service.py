@@ -94,20 +94,39 @@ async def _persist_design_files(
         return systems
 
 
-async def index_design_system(
-    repo_root: Path, design_file: DiscoveredDesignFile
-) -> DesignSystem:
-    """Parse and persist one discovered DESIGN.md file."""
-    root = Path(repo_root).resolve()
-    parsed_file = _parse_design_file(root, design_file)
-    return (await _persist_design_files([parsed_file]))[0]
+class DesignSystemService:
+    """Design system service class."""
+
+    @staticmethod
+    async def index(
+        *, repo_root: Path, design_file: DiscoveredDesignFile
+    ) -> DesignSystem:
+        """
+        Index one discovered DESIGN.md file
+
+        :param repo_root: Repository root path
+        :param design_file: Discovered design file
+        :return:
+        """
+        root = Path(repo_root).resolve()
+        parsed_file = _parse_design_file(root, design_file)
+        return (await _persist_design_files([parsed_file]))[0]
+
+    @staticmethod
+    async def index_all(*, repo_root: Path) -> list[DesignSystem]:
+        """
+        Index every DESIGN.md file discovered in a repository
+
+        :param repo_root: Repository root path
+        :return:
+        """
+        root = Path(repo_root).resolve()
+        parsed_files = [
+            _parse_design_file(root, design_file)
+            for design_file in discover_design_files(root)
+        ]
+
+        return await _persist_design_files(parsed_files)
 
 
-async def index_design_systems(repo_root: Path) -> list[DesignSystem]:
-    """Discover, parse, and persist every DESIGN.md file in a repository."""
-    root = Path(repo_root).resolve()
-    parsed_files = [
-        _parse_design_file(root, design_file)
-        for design_file in discover_design_files(root)
-    ]
-    return await _persist_design_files(parsed_files)
+design_system_service: DesignSystemService = DesignSystemService()

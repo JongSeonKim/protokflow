@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.protokflow.core.errors import FencedYamlBlockError, YamlAnchorError
 from backend.app.protokflow.crud import list_design_tokens
 from backend.app.protokflow.model import DesignSystem
-from backend.app.protokflow.service.design_system_service import index_design_systems
+from backend.app.protokflow.service.design_system_service import design_system_service
 from backend.database import db
 
 
@@ -47,7 +47,7 @@ async def test_indexing_discovers_two_systems_and_stores_source_metadata(
     (tmp_path / "design").mkdir()
     (tmp_path / "design" / "admin-dark.md").write_bytes(sibling_bytes)
 
-    indexed = await index_design_systems(tmp_path)
+    indexed = await design_system_service.index_all(repo_root=tmp_path)
     systems = await _systems()
 
     assert [system.slug for system in indexed] == ["default", "admin-dark"]
@@ -81,7 +81,7 @@ async def test_front_matter_is_optional_and_uses_slug_title_fallback(
         "# No front matter\n", encoding="utf-8"
     )
 
-    await index_design_systems(tmp_path)
+    await design_system_service.index_all(repo_root=tmp_path)
     systems = await _systems()
 
     assert len(systems) == 1
@@ -96,7 +96,7 @@ async def test_indexing_empty_repository_returns_empty_result(
 ) -> None:
     del test_db
 
-    assert await index_design_systems(tmp_path) == []
+    assert await design_system_service.index_all(repo_root=tmp_path) == []
     assert await _systems() == []
 
 
@@ -128,7 +128,7 @@ async def test_invalid_documents_leave_no_partial_database_state(
     (tmp_path / "design" / filename).write_text(contents, encoding="utf-8")
 
     with pytest.raises(error):
-        await index_design_systems(tmp_path)
+        await design_system_service.index_all(repo_root=tmp_path)
 
     assert await _systems() == []
 
@@ -139,8 +139,8 @@ async def test_reindex_is_idempotent_and_does_not_duplicate_tokens(
     del test_db
     (tmp_path / "DESIGN.md").write_text(_design_md("Default", "#111"), encoding="utf-8")
 
-    await index_design_systems(tmp_path)
-    await index_design_systems(tmp_path)
+    await design_system_service.index_all(repo_root=tmp_path)
+    await design_system_service.index_all(repo_root=tmp_path)
 
     systems = await _systems()
     assert len(systems) == 1
@@ -161,7 +161,7 @@ async def test_reindex_after_database_recreation_restores_systems_and_tokens(
         _design_md("Admin Dark", "#222"), encoding="utf-8"
     )
 
-    await index_design_systems(tmp_path)
+    await design_system_service.index_all(repo_root=tmp_path)
     before = await _systems()
     async with db.async_db_session.begin() as session:
         before_tokens = {
@@ -174,7 +174,7 @@ async def test_reindex_after_database_recreation_restores_systems_and_tokens(
 
     await db.drop_tables()
     await db.create_tables()
-    await index_design_systems(tmp_path)
+    await design_system_service.index_all(repo_root=tmp_path)
     after = await _systems()
     async with db.async_db_session.begin() as session:
         after_tokens = {

@@ -314,6 +314,14 @@ class DesignSystemService:
         :param token_patches: Mapping of token paths to new values
         :return:
         """
+        if not token_patches:
+            # An empty patch changes nothing, so it must not rewrite the file or
+            # bump its mtime; return the current persisted state unchanged.
+            async with db.async_db_session() as session:
+                system = await design_system_dao.get_by_slug(session, slug)
+            if system is None:
+                raise UnknownDesignSystemError(f"design system not found: {slug}")
+            return system
         root = Path(repo_root).resolve()
         async with self._lock_for(slug):
             async with db.async_db_session() as session:

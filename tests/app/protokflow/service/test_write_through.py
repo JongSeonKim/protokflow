@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import hashlib
 import os
 from pathlib import Path
-from stat import S_ISDIR
+from stat import S_IMODE, S_ISDIR
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,16 +64,23 @@ async def _token_rows(system_id: str) -> dict[str, str]:
         return {token.token_path: token.value for token in tokens}
 
 
-def _changed_line_count(original: str, patched: str) -> list[tuple[str, str, str]]:
-    """Return (tag, original line, patched line) for every non-equal diff region."""
-    matcher = difflib.SequenceMatcher(
-        None, original.splitlines(), patched.splitlines(), autojunk=False
-    )
-    return [
-        (tag, original.splitlines()[i1], patched.splitlines()[j1])
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
-        if tag != "equal"
+def _single_line_byte_diff(original: bytes, patched: bytes) -> tuple[bytes, bytes]:
+    """Assert the two documents differ in exactly one whole line; return (old, new).
+
+    Lines are split with keepends and compared as bytes, so a stray change to the
+    trailing newline or the EOL style of any untouched line is caught here — a
+    ``str.splitlines()`` comparison drops those bytes and would pass regardless.
+    """
+    original_lines = original.splitlines(keepends=True)
+    patched_lines = patched.splitlines(keepends=True)
+    assert len(original_lines) == len(patched_lines)
+    diffs = [
+        (old, new)
+        for old, new in zip(original_lines, patched_lines, strict=True)
+        if old != new
     ]
+    assert len(diffs) == 1
+    return diffs[0]
 
 
 async def test_patch_changes_exactly_one_line_and_preserves_original_formatting(
@@ -92,13 +98,10 @@ async def test_patch_changes_exactly_one_line_and_preserves_original_formatting(
 
     patched = design_md_path.read_bytes()
     patched_text = patched.decode("utf-8")
-    assert _changed_line_count(_DESIGN_MD, patched_text) == [
-        (
-            "replace",
-            "  primary: '#111111'  # inline comment on primary",
-            "  primary: '#0B0E14'  # inline comment on primary",
-        )
-    ]
+    assert _single_line_byte_diff(_DESIGN_MD.encode(), patched) == (
+        b"  primary: '#111111'  # inline comment on primary\n",
+        b"  primary: '#0B0E14'  # inline comment on primary\n",
+    )
     assert "# Managed by the design platform team." in patched_text
     assert "omitted: [spacing]" in patched_text
     assert "team: core" in patched_text
@@ -382,12 +385,30 @@ async def test_patch_records_metadata_of_the_bytes_it_wrote(
     assert updated.source_digest == hashlib.sha256(written[0]).hexdigest()
 
 
+@pytest.mark.parametrize(
+    "token_patches",
+    [
+        {"colors.primary": "#0B0E14"},
+        {
+            "colors.primary": "#0B0E14",
+            "typography.body.fontSize": "18px",
+            "rounded.full": "12",
+        },
+    ],
+    ids=["single-token", "multi-token-across-groups"],
+)
 async def test_patch_parses_the_document_only_once(
     tmp_path: Path,
     test_db: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    token_patches: dict[str, str],
 ) -> None:
-    """The patched form is derived, not re-parsed, so the hot path pays one parse."""
+    """The patched form is derived, not re-parsed, so the hot path pays one parse.
+
+    A multi-token patch spanning several YAML groups must not cost extra parses:
+    the sub-16ms hot-reload budget is guarded by keeping the parse count at one
+    regardless of how many token paths a single call rewrites.
+    """
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
@@ -404,7 +425,7 @@ async def test_patch_parses_the_document_only_once(
     monkeypatch.setattr(service_module, "parse_design_md", counting_parse)
 
     await design_system_service.apply_token_patch(
-        repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#0B0E14"}
+        repo_root=tmp_path, slug="default", token_patches=token_patches
     )
 
     assert parses == 1
@@ -578,3 +599,241 @@ async def test_concurrent_token_patches_are_serialized_without_lost_updates(
     assert (
         system.source_digest == hashlib.sha256(patched_text.encode("utf-8")).hexdigest()
     )
+
+
+async def test_multi_token_patch_across_groups_persists_every_value(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """One call spanning colors, typography, and rounded must persist all patches."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    patches = {
+        "colors.primary": "#0B0E14",
+        "colors.secondary": "#ABCDEF",
+        "typography.body.fontSize": "18px",
+        "rounded.full": "12",
+    }
+    await design_system_service.apply_token_patch(
+        repo_root=tmp_path, slug="default", token_patches=patches
+    )
+
+    patched_text = design_md_path.read_text(encoding="utf-8")
+    assert "primary: '#0B0E14'" in patched_text
+    assert "secondary: '#ABCDEF'" in patched_text
+    assert "fontSize: '18px'" in patched_text
+    assert "  full: 12\n" in patched_text  # unquoted scalar style preserved
+    assert "'12'" not in patched_text
+    # Untouched envelope survives a multi-group patch.
+    assert "# Managed by the design platform team." in patched_text
+    assert "omitted: [spacing]" in patched_text
+    assert "team: core" in patched_text
+
+    system = await _system_by_slug("default")
+    assert await _token_rows(system.id) == {
+        "colors.primary": "#0B0E14",
+        "colors.secondary": "#ABCDEF",
+        "typography.body.fontSize": "18px",
+        "rounded.full": "12",
+    }
+    assert (
+        system.source_digest == hashlib.sha256(patched_text.encode("utf-8")).hexdigest()
+    )
+
+
+async def test_patch_round_trips_crlf_through_write_through(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """A CRLF document must stay CRLF after write-through; only the target line changes."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    original = _DESIGN_MD.replace("\n", "\r\n").encode()
+    design_md_path.write_bytes(original)
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    await design_system_service.apply_token_patch(
+        repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#0B0E14"}
+    )
+
+    patched = design_md_path.read_bytes()
+    # Every newline is part of a CRLF pair; the LF-only branch never leaked in.
+    assert b"\n" in patched
+    assert patched.count(b"\r\n") == patched.count(b"\n")
+    assert _single_line_byte_diff(original, patched) == (
+        b"  primary: '#111111'  # inline comment on primary\r\n",
+        b"  primary: '#0B0E14'  # inline comment on primary\r\n",
+    )
+
+    system = await _system_by_slug("default")
+    assert (await _token_rows(system.id))["colors.primary"] == "#0B0E14"
+    assert system.source_digest == hashlib.sha256(patched).hexdigest()
+
+
+async def test_patch_writes_through_nested_source_path(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """A system under design/ is patched via its joined path, leaking no .tmp sibling."""
+    del test_db
+    design_dir = tmp_path / "design"
+    design_dir.mkdir()
+    nested = design_dir / "admin.md"
+    nested.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    assert (await _system_by_slug("admin")).source_path == "design/admin.md"
+
+    await design_system_service.apply_token_patch(
+        repo_root=tmp_path, slug="admin", token_patches={"colors.primary": "#0B0E14"}
+    )
+
+    assert b"#0B0E14" in nested.read_bytes()
+    # No temporary artifact was left behind for discovery to trip over.
+    assert [path.name for path in design_dir.iterdir()] == ["admin.md"]
+    # Re-indexing rediscovers exactly one system, not a .tmp masquerading as a sibling.
+    reindexed = await design_system_service.index_all(repo_root=tmp_path)
+    assert sorted(system.slug for system in reindexed) == ["admin"]
+    system = await _system_by_slug("admin")
+    assert (await _token_rows(system.id))["colors.primary"] == "#0B0E14"
+
+
+async def test_empty_token_patches_is_a_noop(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty patch must not rewrite the file, bump its mtime, or reparse it."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    original = _DESIGN_MD.encode()
+    design_md_path.write_bytes(original)
+    await design_system_service.index_all(repo_root=tmp_path)
+    system_before = await _system_by_slug("default")
+    stat_before = os.stat(design_md_path)
+
+    def fail_write(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a no-op patch must not touch the file")
+
+    monkeypatch.setattr(service_module, "_atomic_write_bytes", fail_write)
+
+    result = await design_system_service.apply_token_patch(
+        repo_root=tmp_path, slug="default", token_patches={}
+    )
+
+    assert result.id == system_before.id
+    assert result.source_digest == system_before.source_digest
+    assert design_md_path.read_bytes() == original
+    assert os.stat(design_md_path).st_mtime_ns == stat_before.st_mtime_ns
+    assert (await _token_rows(system_before.id))["colors.primary"] == "#111111"
+
+
+async def test_empty_token_patches_on_unknown_slug_still_raises(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """The no-op fast path still resolves the slug, so an unknown one is rejected."""
+    del test_db
+    (tmp_path / "DESIGN.md").write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    with pytest.raises(UnknownDesignSystemError, match="missing-slug"):
+        await design_system_service.apply_token_patch(
+            repo_root=tmp_path, slug="missing-slug", token_patches={}
+        )
+
+
+def test_atomic_write_preserves_non_default_file_mode(tmp_path: Path) -> None:
+    """copymode carries the target's mode onto the 0o600 mkstemp temp before the swap."""
+    target = tmp_path / "DESIGN.md"
+    target.write_bytes(b"original\n")
+    target.chmod(0o640)
+    mode_before = S_IMODE(os.stat(target).st_mode)
+    assert mode_before == 0o640  # distinct from mkstemp's default 0o600
+
+    service_module._atomic_write_bytes(target, b"new content\n")
+
+    assert target.read_bytes() == b"new content\n"
+    assert S_IMODE(os.stat(target).st_mode) == 0o640
+
+
+def test_atomic_write_unlinks_temp_when_copymode_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copymode failure after the temp is written must unlink it and preserve the target."""
+    target = tmp_path / "DESIGN.md"
+    target.write_bytes(b"original\n")
+
+    def failing_copymode(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated copymode failure")
+
+    monkeypatch.setattr(service_module.shutil, "copymode", failing_copymode)
+
+    with pytest.raises(OSError, match="simulated copymode failure"):
+        service_module._atomic_write_bytes(target, b"new content\n")
+
+    assert target.read_bytes() == b"original\n"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_write_unlinks_temp_when_handle_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write failure into the temp file must unlink it and never touch the target."""
+    target = tmp_path / "DESIGN.md"
+    target.write_bytes(b"original\n")
+
+    real_fdopen = os.fdopen
+
+    def fdopen_with_failing_write(fd: int, mode: str = "wb") -> object:
+        # _atomic_write_bytes always opens the temp descriptor "wb"; wrap that
+        # real handle so only its write() fails while flush/fileno/close stay real.
+        handle = real_fdopen(fd, "wb")
+
+        class _FailingWriteHandle:
+            def __enter__(self) -> _FailingWriteHandle:
+                handle.__enter__()
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                handle.close()
+
+            def write(self, _data: object) -> int:
+                raise OSError("simulated write failure")
+
+            def flush(self) -> None:
+                handle.flush()
+
+            def fileno(self) -> int:
+                return handle.fileno()
+
+        return _FailingWriteHandle()
+
+    monkeypatch.setattr(service_module.os, "fdopen", fdopen_with_failing_write)
+
+    with pytest.raises(OSError, match="simulated write failure"):
+        service_module._atomic_write_bytes(target, b"new content\n")
+
+    assert target.read_bytes() == b"original\n"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.skipif(
+    hasattr(os, "getuid") and os.getuid() == 0,
+    reason="root bypasses directory permission bits",
+)
+def test_atomic_write_propagates_permission_error_on_unwritable_parent(
+    tmp_path: Path,
+) -> None:
+    """mkstemp cannot create the temp in a read-only directory; the error propagates."""
+    design_dir = tmp_path / "locked"
+    design_dir.mkdir()
+    target = design_dir / "DESIGN.md"
+    target.write_bytes(b"original\n")
+    design_dir.chmod(0o500)
+    try:
+        with pytest.raises(PermissionError):
+            service_module._atomic_write_bytes(target, b"new content\n")
+    finally:
+        design_dir.chmod(0o700)
+
+    assert target.read_bytes() == b"original\n"

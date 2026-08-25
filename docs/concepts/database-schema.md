@@ -202,6 +202,7 @@ CREATE INDEX ix_design_tokens_ds_tier ON design_tokens (design_system_id, tier);
 ```
 
 - **행 단위 정규화**: 개별 토큰 PATCH 시의 경합을 제거하고, `UNIQUE(design_system_id, token_path)`로 경로 중복을 방지하며, 시스템 간 diff 조회를 단순화한다.
+- **`id`는 불안정하다 — 토큰의 안정 식별자는 `(design_system_id, token_path)`다.** 토큰 동기화(`design_token_dao.replace`)는 해당 시스템의 토큰 행을 전량 삭제 후 재삽입하므로 모든 `id`가 동기화마다 새로 발급된다. 어떤 테이블도 `design_tokens.id`를 외래키로 참조하지 않는 것이 계약이다. 토큰 단위 소비자(주석·오버라이드·이력, 파생 시스템의 상위 토큰 참조 등)는 항상 `(design_system_id, token_path)` 복합키로 토큰을 지칭한다.
 - **원문 값 보존**: `{colors.primary}` 참조의 해석 및 순환 참조 검출은 코어 엔진(`protokflow.core`)의 캐스케이드 해석기 책임이며(R1), DB는 원문 문자열을 그대로 저장한다.
 - `tier`는 계층별 조회(`:root` CSS 변수 생성 시 foundation 우선 정렬 등)를 지원하기 위한 인덱싱 컬럼이다.
 

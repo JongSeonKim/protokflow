@@ -57,6 +57,31 @@ async def test_upsert_design_system_updates_existing_slug_and_preserves_id(
     assert updated.front_matter_raw == "name: New title\n"
 
 
+async def test_upsert_design_system_preserves_derived_from_id_on_reindex(
+    test_db: AsyncSession,
+) -> None:
+    source = await design_system_dao.create(
+        test_db, DesignSystem(slug="source", title="Source")
+    )
+    source_id = source.id
+    derived = await design_system_dao.create(
+        test_db,
+        DesignSystem(slug="derived", title="Derived", derived_from_id=source_id),
+    )
+    derived_id = derived.id
+
+    await design_system_dao.upsert(
+        test_db,
+        DesignSystem(slug="derived", title="Re-indexed"),
+    )
+
+    test_db.expire_all()
+    persisted = await test_db.get(DesignSystem, derived_id)
+
+    assert persisted is not None
+    assert persisted.derived_from_id == source_id
+
+
 async def test_create_design_system_surfaces_duplicate_slug_violation(
     test_db: AsyncSession,
 ) -> None:

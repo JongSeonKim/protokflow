@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
+
+import pytest
 
 from backend.app.protokflow.core import discovery
+from backend.app.protokflow.core.errors import DuplicateSlugError
 
 
 def test_discovery_is_storage_and_transport_free() -> None:
@@ -15,7 +19,9 @@ def test_discovery_is_storage_and_transport_free() -> None:
     assert "backend.database" not in source
 
 
-def test_discover_root_and_sibling_design_files_without_recursion(tmp_path) -> None:
+def test_discover_root_and_sibling_design_files_without_recursion(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "DESIGN.md").write_text("root", encoding="utf-8")
     design_dir = tmp_path / "design"
     design_dir.mkdir()
@@ -36,9 +42,26 @@ def test_discover_root_and_sibling_design_files_without_recursion(tmp_path) -> N
     ]
 
 
-def test_discover_missing_or_empty_design_directory_returns_empty(tmp_path) -> None:
+def test_discover_missing_or_empty_design_directory_returns_empty(
+    tmp_path: Path,
+) -> None:
     assert discovery.discover_design_files(tmp_path) == []
 
     (tmp_path / "design").mkdir()
 
     assert discovery.discover_design_files(tmp_path) == []
+
+
+def test_discover_duplicate_slug_raises_error(tmp_path: Path) -> None:
+    (tmp_path / "DESIGN.md").write_text("root", encoding="utf-8")
+    design_dir = tmp_path / "design"
+    design_dir.mkdir()
+    (design_dir / "default.md").write_text("sibling", encoding="utf-8")
+
+    with pytest.raises(DuplicateSlugError) as exc_info:
+        discovery.discover_design_files(tmp_path)
+
+    message = str(exc_info.value)
+    assert "default" in message
+    assert "DESIGN.md" in message
+    assert "design/default.md" in message

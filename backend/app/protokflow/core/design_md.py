@@ -261,6 +261,17 @@ def _optional_text(front_matter: CommentedMap, key: str) -> str | None:
     return None if value is None else str(value)
 
 
+def _json_safe_extras(value: Any) -> Any:
+    """Convert front matter extras into values supported by JSON serialization."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe_extras(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_extras(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def parse_design_md(text: str) -> ParsedDesignSystem:
     """Parse a DESIGN.md document into normalized token rows and metadata."""
     split = split_front_matter(text)
@@ -272,7 +283,9 @@ def parse_design_md(text: str) -> ParsedDesignSystem:
     tokens = _flatten_tokens(front_matter)
 
     known = set(FOUNDATION_GROUPS) | {COMPONENT_GROUP} | set(MODELED_SCALARS)
-    extras = {key: value for key, value in front_matter.items() if key not in known}
+    extras = _json_safe_extras(
+        {key: value for key, value in front_matter.items() if key not in known}
+    )
 
     return ParsedDesignSystem(
         front_matter_raw=split.front_matter_raw,

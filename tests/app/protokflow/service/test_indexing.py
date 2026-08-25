@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.core.errors import FencedYamlBlockError, YamlAnchorError
+from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.service.design_system_service import design_system_service
@@ -38,7 +40,7 @@ async def _systems() -> list[DesignSystem]:
 
 
 async def test_indexing_discovers_two_systems_and_stores_source_metadata(
-    tmp_path, test_db: AsyncSession
+    tmp_path: Path, test_db: AsyncSession
 ) -> None:
     del test_db
     root_bytes = _design_md("Default", "#111111").encode()
@@ -74,7 +76,7 @@ async def test_indexing_discovers_two_systems_and_stores_source_metadata(
 
 
 async def test_front_matter_is_optional_and_uses_slug_title_fallback(
-    tmp_path, test_db: AsyncSession
+    tmp_path: Path, test_db: AsyncSession
 ) -> None:
     del test_db
     (tmp_path / "design").mkdir()
@@ -93,7 +95,7 @@ async def test_front_matter_is_optional_and_uses_slug_title_fallback(
 
 
 async def test_indexing_empty_repository_returns_empty_result(
-    tmp_path, test_db: AsyncSession
+    tmp_path: Path, test_db: AsyncSession
 ) -> None:
     del test_db
 
@@ -117,7 +119,7 @@ async def test_indexing_empty_repository_returns_empty_result(
     ],
 )
 async def test_invalid_documents_leave_no_partial_database_state(
-    tmp_path,
+    tmp_path: Path,
     test_db: AsyncSession,
     filename: str,
     contents: str,
@@ -135,7 +137,7 @@ async def test_invalid_documents_leave_no_partial_database_state(
 
 
 async def test_reindex_is_idempotent_and_does_not_duplicate_tokens(
-    tmp_path, test_db: AsyncSession
+    tmp_path: Path, test_db: AsyncSession
 ) -> None:
     del test_db
     (tmp_path / "DESIGN.md").write_text(_design_md("Default", "#111"), encoding="utf-8")
@@ -153,7 +155,7 @@ async def test_reindex_is_idempotent_and_does_not_duplicate_tokens(
 
 
 async def test_reindex_after_database_recreation_restores_systems_and_tokens(
-    tmp_path, test_db: AsyncSession
+    tmp_path: Path, test_db: AsyncSession
 ) -> None:
     del test_db
     (tmp_path / "DESIGN.md").write_text(_design_md("Default", "#111"), encoding="utf-8")
@@ -194,3 +196,36 @@ async def test_reindex_after_database_recreation_restores_systems_and_tokens(
         for system in before
     ]
     assert after_tokens == before_tokens
+
+
+async def test_indexing_rolls_back_all_systems_when_persistence_fails(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del test_db
+    (tmp_path / "DESIGN.md").write_text(_design_md("Default", "#111"), encoding="utf-8")
+    (tmp_path / "design").mkdir()
+    (tmp_path / "design" / "admin-dark.md").write_text(
+        _design_md("Admin Dark", "#222"), encoding="utf-8"
+    )
+
+    real_upsert = design_system_dao.upsert
+    upsert_calls = 0
+
+    async def fail_on_second_upsert(
+        session: AsyncSession, design_system: DesignSystem
+    ) -> DesignSystem:
+        nonlocal upsert_calls
+        upsert_calls += 1
+        if upsert_calls == 2:
+            raise RuntimeError("test persistence failure")
+        return await real_upsert(session, design_system)
+
+    monkeypatch.setattr(design_system_dao, "upsert", fail_on_second_upsert)
+
+    with pytest.raises(RuntimeError, match="test persistence failure"):
+        await design_system_service.index_all(repo_root=tmp_path)
+
+    async with db.async_db_session.begin() as session:
+        assert await session.scalar(select(func.count(DesignSystem.id))) == 0

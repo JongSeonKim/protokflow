@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,9 +35,10 @@ def _parse_design_file(
     repo_root: Path, design_file: DiscoveredDesignFile
 ) -> _ParsedDesignFile:
     """Read, digest, and parse one discovered file without database access."""
-    content = design_file.path.read_bytes()
+    with design_file.path.open("rb") as file_handle:
+        content = file_handle.read()
+        stat = os.fstat(file_handle.fileno())
     parsed = parse_design_md(content.decode("utf-8"))
-    stat = design_file.path.stat()
     return _ParsedDesignFile(
         slug=design_file.slug,
         source_path=design_file.path.relative_to(repo_root).as_posix(),
@@ -97,21 +99,6 @@ async def _persist_design_files(
 
 class DesignSystemService:
     """Design system service class."""
-
-    @staticmethod
-    async def index(
-        *, repo_root: Path, design_file: DiscoveredDesignFile
-    ) -> DesignSystem:
-        """
-        Index one discovered DESIGN.md file
-
-        :param repo_root: Repository root path
-        :param design_file: Discovered design file
-        :return:
-        """
-        root = Path(repo_root).resolve()
-        parsed_file = _parse_design_file(root, design_file)
-        return (await _persist_design_files([parsed_file]))[0]
 
     @staticmethod
     async def index_all(*, repo_root: Path) -> list[DesignSystem]:

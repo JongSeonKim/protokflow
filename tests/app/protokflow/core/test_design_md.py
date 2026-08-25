@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -415,6 +416,24 @@ def test_omitted_and_unknown_keys_are_preserved_in_extras() -> None:
         {"section": "rounded", "reason": "No rounded corners defined in brand book"},
     ]
     assert extras["iconography"] == {"set": "lucide", "stroke": 1.5}
+
+
+def test_unknown_extra_dates_are_json_safe() -> None:
+    text = (
+        "---\n"
+        "updated: 2024-01-01\n"
+        "audit:\n"
+        "  published_at: 2024-01-01T12:34:56Z\n"
+        "---\n"
+        "# Guide\n"
+    )
+
+    parsed = parse_design_md(text)
+
+    assert json.dumps(parsed.front_matter_extras)
+    assert parsed.front_matter_extras["updated"] == "2024-01-01"
+    assert isinstance(parsed.front_matter_extras["updated"], str)
+    assert isinstance(parsed.front_matter_extras["audit"]["published_at"], str)
 
 
 def test_modeled_scalars_are_separated_from_extras() -> None:

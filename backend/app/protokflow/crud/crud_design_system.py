@@ -40,6 +40,8 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
 
         :param db: Database session
         :param obj: Design system instance carrying the desired state
+        File-driven re-index owns file-derived columns only; provenance columns
+        (``derived_from_id``) are preserved.
         :return:
         """
         existing = await self.get_by_slug(db, obj.slug)
@@ -49,7 +51,6 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
         existing.title = obj.title
         existing.description = obj.description
         existing.spec_version = obj.spec_version
-        existing.derived_from_id = obj.derived_from_id
         existing.front_matter_extras = obj.front_matter_extras
         existing.front_matter_raw = obj.front_matter_raw
         existing.guide_markdown = obj.guide_markdown

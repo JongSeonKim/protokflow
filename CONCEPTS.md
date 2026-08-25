@@ -21,3 +21,17 @@ The controller and serial test executions use the run ID alone in their database
 
 ### Tooling Lane
 An optional suite of tests with external tooling dependencies, partitioned by an opt-in marker that is automatically deselected from standard test runs.
+
+## Storage Reconciliation
+
+### Precheck
+The stat-based first check every storage entry point runs against the linked DESIGN.md: compare the stored `(mtime_ns, size)` pair, and compute sha256 only on mismatch to decide between a metadata-only refresh and re-indexing.
+
+### Reconcile
+The process by which a storage entry point catches the database up to an externally changed DESIGN.md — the file is the recovery source of truth, so a digest mismatch re-indexes from the file before the entry point proceeds.
+
+### File-Ahead State
+The failure state after a successful file write whose database commit failed: the file is ahead of the database, and the next entry point's precheck absorbs the change by re-indexing rather than treating it as a concurrent modification.
+
+### Stale
+A read-time derived status for a design system whose source file is absent: the row is retained because a branch switch may make the file reappear, and staleness is computed at query time instead of being stored in a column.

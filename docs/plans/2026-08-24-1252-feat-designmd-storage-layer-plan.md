@@ -16,7 +16,7 @@ execution: code
 ## Goal Capsule
 
 ### Objective
-레포의 `DESIGN.md` 파일들이 SQLite 저장소에 인덱싱되고, 저장소를 통한 편집이 원문 서식을 유지한 채 파일로 되돌아가며, 외부에서 파일이 바뀌면 다음 호출이 자동으로 따라잡는다. DB를 삭제해도 파일로부터 완전히 복원된다.
+레포의 `DESIGN.md` 파일들이 SQLite 저장소에 인덱싱되고, 저장소를 통한 편집이 원문 서식을 유지한 채 파일로 되돌아가며, 외부에서 파일이 바뀌면 다음 호출이 자동으로 따라잡는다 — `(mtime_ns, size)`를 보존한 채 내용만 바꾸는 변경은 자동 감지 밖이며 `protokflow index`로 복구한다. DB를 삭제해도 파일로부터 완전히 복원된다.
 
 ### Means
 라운드트립 YAML 파서로 Front Matter 원문을 보존하고 대상 토큰만 in-place 치환하는 write-through (KTD1).
@@ -37,10 +37,10 @@ None.
 ## Product Contract
 
 ### Summary
-Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 레포 루트의 `DESIGN.md`와 `design/{slug}.md`를 탐색해 정규화된 토큰 트리로 인덱싱하고, Front Matter 원문을 보존해 편집 시 대상 토큰만 치환하는 write-through를 제공하며, 매 진입점에서 `(mtime_ns, size)` 선검사로 외부 변경을 감지해 재인덱싱한다. 기존 8개 테이블 모델 위에 repository·service 계층과 CLI 진입점을 얹고, 프로토타입이 검증한 파서/직렬화기를 제품 트리로 이식한다.
+Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 레포 루트의 `DESIGN.md`와 `design/{slug}.md`를 탐색해 정규화된 토큰 트리로 인덱싱하고, Front Matter 원문을 보존해 편집 시 대상 토큰만 치환하는 write-through를 제공하며, 매 진입점에서 `(mtime_ns, size)` 선검사로 외부 변경을 감지해 재인덱싱한다. 7개 테이블 저장소 모델 위에 repository·service 계층과 CLI 진입점을 얹어 루프를 완성한다.
 
 ### Problem Frame
-저장소 모델 8개 테이블과 부트 경로는 이미 존재하지만 이를 읽고 쓰는 계층이 없다. `backend/app/protokflow/schema/`와 `api/v1/`은 비어 있고 `crud/`·`service/`는 존재하지 않아, 인덱싱된 디자인 시스템이 하나도 없는 상태다. 스키마 버전 부트 체크(`create_tables`)를 담은 `register_init` 수명주기가 `FastAPI(...)`에 연결되지 않아 발화하지 않는다. 표준 테스트 하니스는 구현 완료되어 있다 — conftest 환경 주입, 워커별 격리 DB, `test_db` 픽스처, 격리 불변식 메타 테스트가 갖춰져 있으므로 본 플랜의 테스트는 이 기반을 새로 만들지 않고 소비한다.
+저장소 모델은 7개 도메인 테이블(`design_systems`, `design_tokens`, `prototype_runs`, `candidates`, `token_patches`, `slot_contents`, `exports`)과 부트 경로로 구성되며, 스키마 버전은 테이블이 아닌 `PRAGMA user_version`에 기록된다. 직렬화·저장소 계층 유닛(U1~U5)은 구현 완료되었다 — 파서 `backend/app/protokflow/core/design_md.py`, 탐색 `core/discovery.py`, CRUD `crud/`, 인덱싱·패치 서비스 `service/design_system_service.py`와 대응 테스트가 제품 트리에 존재한다. 남은 실행 대상은 U6(외부 변경 재조정), U7(부트 수명주기 배선), U8(CLI·린터 적합성 스위트)이다. `register_init` 수명주기는 아직 `FastAPI(...)`에 연결되지 않아 `create_tables()`가 발화하지 않는다. 표준 테스트 하니스는 구현 완료되어 있다 — conftest 환경 주입, 워커별 격리 DB, `test_db` 픽스처, 격리 불변식 메타 테스트가 갖춰져 있으므로 본 플랜의 테스트는 이 기반을 소비한다.
 
 공식 스펙(`@google/design.md` 0.4.0) 기반 라운드트립 전략, 앵커 처리, 토큰 컬럼 규격 및 `front_matter_raw` 스키마가 검증 완료되었으며, 본 플랜은 이를 프로덕션 저장소 계층으로 구현하는 것을 목표로 한다.
 
@@ -54,10 +54,10 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 
 #### 직렬화 및 파일 계약
 - R16. `DESIGN.md`(YAML Front Matter + Markdown)를 파싱해 정규화된 토큰 트리로 변환하고 역으로 내보내는 양방향 직렬화기를 구현해야 한다. 왕복은 바이트 수준으로 무손실이어야 한다 — `omitted`, 린터가 침묵하는 커스텀 확장 키, 주석, 빈 줄, 따옴표 스타일, 키 순서를 모두 보존해야 하며, 방출된 파일은 vendored `@google/design.md` 0.4.0 린트를 새 경고 없이 통과해야 한다. Front Matter에 YAML 앵커(`&name`) 또는 별칭(`*name`)이 존재하면 인덱싱 시점에 명시적 오류로 거부해야 한다.
-- R23. 파일 탐색은 레포 루트의 `DESIGN.md`(= `default`)와 `design/{slug}.md`로 한정해야 한다. 두 경로 밖의 하위 디렉토리 `DESIGN.md`는 인덱싱 대상이 아니며 무시한다 — 부분 오버라이드 개념은 존재하지 않는다.
+- R23. 파일 탐색은 레포 루트의 `DESIGN.md`(= `default`)와 `design/{slug}.md`로 한정해야 한다. 두 경로 밖의 하위 디렉토리 `DESIGN.md`는 인덱싱 대상이 아니며 무시한다 — 부분 오버라이드 개념은 존재하지 않는다. 원본 서버 플랜 R23의 "하위 디렉토리 `DESIGN.md`는 형제 디자인 시스템으로 취급" 표현은 `design/{slug}.md` 형제 문서를 가리키는 것으로 해석하며, 재귀 탐색 확장은 본 플랜의 범위 밖이다 (see origin: KD8).
 
 #### 저장소 및 동기화
-- R17. 8개 테이블 SQLite 저장소를 실제로 읽고 쓰는 계층을 제공해야 한다. 디자인 시스템 조회·생성·갱신과 토큰 전량 동기화가 단일 트랜잭션으로 완결되어야 한다. 상세 스키마는 [데이터베이스 스키마 설계](../concepts/database-schema.md)를 단일 소스로 한다.
+- R17. 7개 테이블 SQLite 저장소를 실제로 읽고 쓰는 계층을 제공해야 한다. 디자인 시스템 조회·생성·갱신과 토큰 전량 동기화가 단일 트랜잭션으로 완결되어야 한다. 상세 스키마는 [데이터베이스 스키마 설계](../concepts/database-schema.md)를 단일 소스로 한다.
 - R20. 부팅 시 `PRAGMA user_version`을 검사해 코드가 기대하는 버전과 비교하고, 불일치 시 명확한 오류와 복구 안내를 제공해야 한다. DB 삭제 후 `DESIGN.md`로부터의 재인덱싱이 항상 유효한 복구 경로여야 한다.
 - R21. 저장소 진입점마다 대응 `DESIGN.md` 파일의 `(mtime_ns, size)`를 선검사하고, 불일치할 때만 sha256을 계산해 재인덱싱 여부를 판정해야 한다. mtime은 부동소수점 초가 아닌 정수 나노초(`st_mtime_ns`)로 저장·비교한다. `git pull`, 브랜치 전환, fresh clone, 파일 직접 편집을 모두 감지해야 한다. mtime을 보존한 채 내용만 바꾸는 변경(`cp -p`, `rsync -a`, `touch -r` 조합)은 stat 선검사의 감지 밖이며, `protokflow index` 재실행이 선검사를 우회하는 강제 재인덱싱 탈출구다.
 
@@ -134,11 +134,11 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 
 - KTD3. **인덱싱 시점 YAML 앵커/별칭 거부** — Front Matter 내 YAML 앵커(`&name`) 또는 별칭(`*name`) 감지 시 명시적 예외를 발생시키고 스펙 참조 문법(`{colors.primary}`)으로의 변환을 안내한다. 앵커 파일 전용 재생성 폴백 경로를 추가로 유지하는 대신, 인덱싱 시점 검사를 통해 참조 무결성 훼손을 차단하고 직렬화 파이프라인을 KTD1 단일 경로로 단순화한다. `Governs R16`
 
-- KTD4. **단일 `sa.Text` 컬럼 기반 토큰 값 저장** — YAML 숫자(`fontWeight: 600`, `lineHeight: 1.1` 등)를 문자열로 저장한다. 스펙상 bare number와 quoted string의 의미적 동등성이 보장되므로(`fontWeight`: "both are equivalent"), 불필요한 `value_kind` 타입 판별 컬럼을 추가하지 않는다. 재출력 시 인용은 패치로 값이 수정된 토큰에만 적용하며, 무편집 왕복 시에는 원문의 스칼라 표기(bare 숫자 포함)를 그대로 보존한다. `Governs R17`
+- KTD4. **단일 `sa.Text` 컬럼 기반 토큰 값 저장** — YAML 숫자(`fontWeight: 600`, `lineHeight: 1.1` 등)를 문자열로 저장한다. 스펙상 bare number와 quoted string의 의미적 동등성이 보장되므로(`fontWeight`: "both are equivalent"), 불필요한 `value_kind` 타입 판별 컬럼을 추가하지 않는다. 패치된 토큰은 값을 교체하되 스칼라 표기(인용·bare 여부)는 원문을 상속하며, 무편집 왕복 시에도 원문의 스칼라 표기(bare 숫자 포함)를 그대로 보존한다. `Governs R17`
 
 - KTD5. **repository / service 2계층을 도입한다.** `crud/`는 SQLAlchemy 문장만 소유하고 트랜잭션과 파일 I/O는 `service/`가 소유한다. 스캐폴드가 `api/v1/`·`schema/`·`model/`를 이미 배치했으므로 같은 규약을 따른다. 쓰기 트랜잭션 소유권을 서비스에 일원화하는 스키마 문서 §6 규정과 일치한다. `Governs R17`
 
-- KTD6. **재조정은 서비스 진입점의 선검사로 구현한다.** 파일 워처 데몬을 두지 않는다. 조회·패치 진입점마다 `(mtime_ns, size)`를 검사하고 불일치 시에만 sha256을 계산한다. mtime은 정수 나노초로 저장한다 — 실측(APFS·SQLite)에서 파일시스템이 1ns까지 정확히 저장하고 SQLite `INTEGER`는 무손실 왕복하는 반면, 초 단위 `REAL`(float64)은 현재 epoch에서 최소 가시 간격이 약 238ns(ULP)여서 저장 계층이 감지 정밀도를 저하시킨다. `Governs R21`
+- KTD6. **재조정은 서비스 진입점의 선검사로 구현한다.** 파일 워처 데몬을 두지 않는다. 조회·패치 진입점마다 `(mtime_ns, size)`를 검사하고 불일치 시에만 sha256을 계산한다. mtime은 정수 나노초로 저장한다 — 실측(APFS·SQLite)에서 파일시스템이 1ns까지 정확히 저장하고 SQLite `INTEGER`는 무손실 왕복하는 반면, 초 단위 `REAL`(float64)은 현재 epoch에서 최소 가시 간격이 약 238ns(ULP)여서 저장 계층이 감지 정밀도를 저하시킨다. 조회·패치 모든 진입점이 이 선검사를 통과하므로 파일 선행 상태(KTD9)를 포함한 진입 전 외부 변경은 재조정으로 흡수되고, `ConcurrentModificationError`는 선검사 통과 후 원자적 쓰기 전 창의 실경합만 수호한다. 이는 어떤 진입점이 다음 호출이어도 파일 기준 복구가 성립해야 KTD9(파일 선행) 계약이 완결되기 때문이다. `Governs R21`
 
 - KTD7. **회귀 테스트가 vendored 공식 린터를 호출한다.** `@google/design.md` 0.4.0 tarball을 레포에 vendoring하고 `node`로 `lint`·`diff`를 실행해 AE6·AE7을 검증한다. Node가 없으면 해당 테스트만 skip 처리한다. `Governs R16`
 
@@ -147,6 +147,7 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 - KTD9. **write-through는 파일을 먼저 쓰고 DB 트랜잭션을 나중에 커밋한다.** DB와 파일은 하나의 트랜잭션으로 묶을 수 없으므로 실패 지점에 따라 두 가지 결과만 남게 설계한다. 파일 쓰기가 실패하면 DB 트랜잭션이 롤백되어 아무것도 바뀌지 않는다. 파일 쓰기 성공 후 DB 커밋이 실패하면 파일이 DB보다 앞서지만, 다음 진입점의 선검사(R21)가 digest 불일치를 감지해 파일로부터 재인덱싱한다. 파일이 복구 원본이라는 저장소 위상 불변식이 이 방향을 강제한다 — 반대 순서는 DB가 앞서고 파일이 뒤처지는 상태를 만들며, 선검사가 이를 되돌릴 방법이 없다. `Governs R16, R17`
 
 - KTD10. **Front Matter 부재 문서는 수용하고, 본문의 fenced YAML 블록은 인덱싱 시점에 거부한다.** 정본 스펙이 Front Matter를 optional로 규정하고("An optional YAML frontmatter") 공식 린터 0.4.0 역시 Front Matter 부재 문서를 경고 1건(`NO_YAML_FOUND`)으로 통과시키므로, Front Matter 부재는 유효한 문서 형태다. 인덱싱 시 `title`은 slug로 폴백하여 `design_systems.title`의 NOT NULL 제약을 충족하고, `front_matter_raw`는 빈 문자열(`''`), 토큰은 0건으로 저장한다. 반면 본문의 fenced YAML 블록(```yaml / ```yml)은 공식 파서의 비규범적 확장으로, 이를 수용하려면 소스 위치 추적, 본문 패치, 중복 섹션 병합 등 저장 모델 전반의 재설계가 요구되어 KTD1의 단일 직렬화 경로가 훼손된다. 따라서 KTD3의 YAML 앵커 거부와 동일하게 인덱싱 시점 명시적 오류로 거부하고 Front Matter 통합을 안내한다. `Governs R16, R17`
+- KTD11. **배치 재인덱싱은 고아 행을 하드 삭제하고, 개별 진입점의 파일 부재는 조회 시점 파생 stale로 보고한다.** `index_all`은 발견 집합에 없는 파일 기반 행(`source_path` NOT NULL)을 upsert와 같은 트랜잭션에서 삭제한다. 토큰은 CASCADE로 제거되고 DB 전용 행(`source_path` NULL, R22 영역)은 유지된다. 반면 진입점 조회에서 파일이 없으면 행을 유지한다 — 브랜치 전환 중 일시 부재와 영구 삭제를 구분할 정보가 없으며, stale는 저장 컬럼 없이 조회 시점에 파생한다. "DB는 소멸 가능, 파일이 복구 원본"(KTD9) 저장소 위상 및 U8 `protokflow index` 강제 재인덱싱 탈출구와 정합한다. 전면 stale 표시 및 현상 유지 방식은 배치마다 stale 행이 누적되고 U8 `status`가 거짓 동기화 상태를 보고하므로 배제한다. `Governs R17, R21`
 
 ### High-Level Technical Design
 
@@ -195,8 +196,8 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A["서비스 진입점 호출"] --> C{"파일이<br/>존재하는가?"}
-    C -->|아니오| Y["stale 표시<br/>DB 상태 유지"]
+    A["서비스 진입점 호출<br/>(조회·패치)"] --> C{"파일이<br/>존재하는가?"}
+    C -->|아니오| Y["조회: stale 판정·DB 유지<br/>패치: MissingSourceFileError"]
     C -->|예| D["stat: mtime_ns, size"]
     D --> E{"저장된 값과<br/>일치하는가?"}
     E -->|예| Z
@@ -237,6 +238,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - 기존 저장소 모델: `backend/app/protokflow/model/` 8개 파일, 커스텀 타입 `types.py`.
 - 부트 경로 및 세션 팩토리 프록시: `backend/database/db.py` — `_set_factory_for_testing` 훅이 테스트 격리의 기반이다.
 - 스캐폴드 규약: `backend/core/registrar.py`(수명주기 미배선), `backend/common/model.py`(`Base` 감사 컬럼), `backend/cli.py`(cappa 스텁).
+- 재인덱싱 및 재조정 정책 사양: 이슈 [#7](https://github.com/JongSeonKim/protokflow/issues/7)(배치 재인덱싱 고아 행 하드 삭제 규약, KTD11), 이슈 [#13](https://github.com/JongSeonKim/protokflow/issues/13)(파일 선행 상태에 대한 전 진입점 재조정 복구 규약, KTD6).
 
 ---
 
@@ -263,7 +265,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 **Test scenarios**:
 - `ruamel.yaml`이 런타임 import 경로에서 사용 가능하다.
-- 이미 충족 — async 세션에서 8개 테이블 존재와 테스트 간 행 격리는 하니스 계약 테스트(`tests/database/test_fixtures.py`)가 증명한다.
+- 이미 충족 — async 세션에서 7개 테이블 존재와 테스트 간 행 격리는 하니스 계약 테스트(`tests/database/test_fixtures.py`)가 증명한다.
 
 **Verification**: `uv sync`가 통과하고 `pytest`가 수집·실행된다. `pyproject.toml`에 `ruamel` 문자열이 존재한다.
 
@@ -279,9 +281,9 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 **Files**:
 - `backend/app/protokflow/core/__init__.py`
-- `backend/app/protokflow/core/designmd.py`
+- `backend/app/protokflow/core/design_md.py`
 - `backend/app/protokflow/core/errors.py` — 앵커·fenced YAML 블록 거부 예외
-- `tests/app/protokflow/core/test_designmd.py`
+- `tests/app/protokflow/core/test_design_md.py`
 - `tests/fixtures/design_md/` — 픽스처 6종(무손실 왕복 4종, Front Matter 부재 1종, 거부 검증 1종)
 
 **Approach**:
@@ -298,7 +300,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 **Execution note**: 테스트 픽스처(`tests/fixtures/`)를 선행 배치하고, TDD 방식으로 바이트 단위 왕복 검증 테스트를 통과하도록 모듈을 구현한다.
 
 **Test scenarios**:
-- Front Matter가 없는 파일을 파싱하면 본문 전체가 `guide_markdown`이 되고 토큰이 0개다.
+- Front Matter가 없고 fenced YAML 블록도 없는 파일을 파싱하면 본문 전체가 `guide_markdown`이 되고 토큰이 0개다 — fenced YAML 블록이 있으면 Front Matter 유무와 무관하게 거부된다.
 - 본문에 fenced YAML 블록이 있으면 명시적 오류로 거부되고, 예외 메시지가 토큰을 Front Matter로 통합하라고 안내한다.
 - Front Matter가 정상 존재해도 본문의 fenced YAML 블록은 동일한 오류로 거부된다 (감지는 Front Matter 유무와 독립).
 - 닫히지 않은 Front Matter 펜스는 파싱 오류를 낸다.
@@ -419,7 +421,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - 존재하지 않는 `token_path` 패치가 명확한 오류를 낸다.
 - 쓰기 도중 실패해도 원본 파일이 손상되지 않는다.
 - 파일 쓰기가 실패하면 DB 트랜잭션이 롤백되어 토큰 값이 바뀌지 않는다 (KTD9).
-- 파일 쓰기 성공 후 DB 커밋이 실패한 상태에서 다음 조회를 하면, 선검사가 digest 불일치를 감지해 파일 기준으로 재인덱싱한다 (KTD9).
+- 파일 쓰기 성공 후 DB 커밋이 실패한 상태에서 다음 조회를 하면, 선검사가 digest 불일치를 감지해 파일 기준으로 재인덱싱한다 (KTD9) — 복구 후반부의 증명은 U6 필수 시나리오로 회수한다 (이슈 #13).
 
 **Verification**: 주석이 포함된 픽스처를 인덱싱하고 토큰 하나를 패치한 뒤 `git diff` 상당의 라인 수를 센다.
 
@@ -427,22 +429,29 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 ### U6. 외부 변경 재조정
 
-**Goal**: `git pull`, 브랜치 전환, 직접 편집으로 바뀐 파일을 다음 진입점에서 감지해 재인덱싱한다.
+**Goal**: `git pull`, 브랜치 전환, 직접 편집으로 바뀐 파일을 다음 진입점(조회·패치)에서 감지해 재인덱싱한다. 재조정이 발화할 조회 진입점을 서비스에 추가한다.
 
-**Requirements**: R21. KTD6을 구현한다. AE8.
+**Requirements**: R21, R17. KTD6(전 진입점 재조정), KTD11(배치 고아 삭제)을 구현한다. AE8.
 
 **Dependencies**: U5.
 
 **Files**:
 - `backend/app/protokflow/service/reconcile.py`
-- `backend/app/protokflow/service/design_system_service.py` — 진입점에 선검사 삽입
+- `backend/app/protokflow/service/design_system_service.py` — 조회 진입점 추가, 진입점에 선검사 삽입, `index_all` 고아 삭제
+- `backend/app/protokflow/crud/crud_design_system.py` — 고아 행 삭제 쿼리
+- `backend/app/protokflow/core/errors.py` — `MissingSourceFileError` 추가
 - `tests/app/protokflow/service/test_reconcile.py`
+- `tests/app/protokflow/service/test_write_through.py` — 동시 수정 가드 및 재조정 검증 테스트
 
 **Approach**:
-1. 선검사는 `(mtime_ns, size)` 비교다. 저장된 값과 일치하면 즉시 반환한다.
-2. 불일치 시에만 sha256을 계산해 `source_digest`와 비교한다. 해시가 같으면 `mtime_ns`·`size`만 갱신하고 재파싱하지 않는다 — 터치만 된 파일 경로다.
-3. 해시가 다르면 U4의 인덱싱을 재실행한다.
-4. 파일이 사라진 경우 DB 상태를 유지하고 stale로 표시한다. 삭제하지 않는다 — 브랜치 전환 중 일시적으로 없을 수 있다.
+1. 조회 진입점(slug 단위 조회)을 추가한다. 현재 서비스에 읽기 경로가 없어 "다음 조회" 시나리오가 성립하지 않는다. 이 진입점은 U8 `status`의 기반이다.
+2. 모든 진입점(조회·패치)이 진입 시 재조정을 통과한다(KTD6). 재조정된 최신 내용 위에서 패치가 적용되므로 파일 선행 상태(KTD9)와 진입 전 외부 변경은 흡수·보존된다. `ConcurrentModificationError`는 선검사 통과 후 원자적 쓰기 전 창의 실경합만 수호하며, 진입 전 발생한 외부 변경은 예외 발생 대신 최신 내용을 흡수하여 패치를 적용한다.
+3. 쓰기 전 실경합 방어는 쓰기 직전 재검증 CAS로 구현한다 — 임시 파일 생성 직전 원본을 다시 읽어 진입 시 digest와 비교하고, 불일치 시 `ConcurrentModificationError`를 발생시켜 임시 파일을 폐기한다. 검증→교체 사이 극소 창은 POSIX에서 원천 제거가 불가능하므로, 창 최소화와 불일치 시 안전 실패를 계약으로 한다. 프로세스 간 잠금(flock 등)은 도입하지 않는다 — 경합 상대(git·에디터)가 잠금을 무시하고 inode 기반 잠금은 원자적 교체 쓰기와 상성이 나쁘며, 프로세스 내 경합은 이미 `slug`별 `asyncio.Lock`으로 직렬화되어 있다.
+4. 선검사는 `(mtime_ns, size)` 비교다. 저장된 값과 일치하면 즉시 반환한다. 이 조기 반환은 "저장된 digest와 stat이 같은 바이트를 기술한다" 불변식(U5)에 의존한다 — write-through가 `source_*` 메타데이터를 같은 트랜잭션에 갱신하므로 성립한다.
+5. 불일치 시에만 sha256을 계산해 `source_digest`와 비교한다. 해시가 같으면 `mtime_ns`·`size`만 갱신하고 재파싱하지 않는다 — 터치만 된 파일 경로다.
+6. 해시가 다르면 U4의 인덱싱을 재실행한다. 재인덱싱이 거부되는 경우(앵커 도입 등) 이전 DB 상태를 유지한다.
+7. 파일이 사라진 경우 진입점별로 동작이 갈린다. 조회·상태 진입점은 DB 상태를 유지하고 stale를 조회 시점 파생 판정으로 반환한다. 저장 컬럼은 추가하지 않는다(KTD11) — 브랜치 전환 중 일시 부재와 영구 삭제를 구분할 정보가 없다. 패치 진입점은 `MissingSourceFileError`로 거부하고 파일·DB 어느 쪽도 변경하지 않는다 — 패치의 계약은 항상 파일을 쓰는 것이므로(U5), 파일 없는 성공은 무결성 위반을 숨기고 DB 재생성은 파일 기반 복구 위상(KTD9)을 뒤집는다.
+8. `index_all`은 발견 집합에 없는 파일 기반 행(`source_path` NOT NULL)을 upsert와 같은 트랜잭션에서 하드 삭제한다(KTD11). 토큰은 CASCADE로 제거되고 DB 전용 행(`source_path` NULL)은 유지된다. 삭제 쿼리는 `crud/`가 소유한다(KTD5). 발견 집합이 비어 있어도 트랜잭션을 열어 고아 삭제를 실행한다 — 마지막 파일 삭제 경로가 빈 집합을 만들므로, 조기 반환은 고아 삭제를 우회한다.
 
 **Test scenarios**:
 - Covers AE8. 파일 내용 변경 후 조회가 갱신된 토큰을 반환한다.
@@ -451,11 +460,20 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - 크기는 같지만 내용이 다른 변경이 감지된다.
 - 같은 크기의 변경이 1ns 차이 mtime으로 발생해도 선검사가 불일치로 판정해 digest 비교로 이어진다 — 나노초 정수 저장의 회귀 증명이다.
 - mtime 보존 복사(`cp -p`, `rsync -a`, `touch -r`)로 내용만 바뀐 파일은 stat 선검사가 감지하지 못한다(감지 경계). `protokflow index` 재실행이 강제 재인덱싱으로 복구한다.
-- 파일 삭제 후 조회가 예외 없이 이전 DB 상태를 반환하고 stale로 표시한다.
+- 파일 삭제 후 조회가 예외 없이 이전 DB 상태를 반환하고 조회 시점 파생 stale 상태를 함께 반환한다 — 저장 컬럼은 존재하지 않는다.
+- 파일 삭제 후 패치 시도가 `MissingSourceFileError`로 거부되고 파일·DB 모두 변경되지 않는다.
 - 재인덱싱이 이전 토큰을 남기지 않는다.
 - 외부 편집이 앵커를 도입한 경우 재인덱싱이 거부되고 이전 DB 상태가 유지된다.
+- DB 커밋 실패 주입으로 파일 선행 상태를 만든 뒤 다음 조회를 호출하면 패치된 값이 반환되고 `source_digest`가 파일과 일치한다 (KTD9 복구 검증).
+- 파일 선행 상태에서 다음 호출이 `apply_token_patch`면 재조정 후 패치가 정상 적용된다.
+- 진입 전 외부 수정은 흡수된 뒤 패치가 적용되고 외부 변경과 패치가 모두 파일·DB에 반영된다.
+- 선검사 통과 후 원자적 쓰기 직전 창에서 파일이 변경되면 `ConcurrentModificationError`가 발생한다.
+- 쓰기 직전 재검증(CAS)에서 불일치가 감지되면 `ConcurrentModificationError`가 발생하고 임시 파일이 폐기되며 원본이 보존된다.
+- 파일을 삭제한 뒤 `index_all`을 재실행하면 해당 디자인 시스템 행과 토큰이 단일 트랜잭션에서 삭제된다 (KTD11).
+- 레포의 모든 `DESIGN.md`를 삭제한 뒤 `index_all` 재실행 시 빈 발견 집합에서도 파일 기반 행 전체가 삭제된다.
+- DB 전용 행(`source_path` NULL)은 `index_all` 재실행 후에도 유지된다.
 
-**Verification**: 인덱싱 후 파일을 외부에서 수정하고 조회했을 때 새 값이 나오는지, 그리고 수정하지 않았을 때 해시 계산이 생략되는지 확인한다.
+**Verification**: 인덱싱 후 파일을 외부에서 수정하고 조회했을 때 새 값이 나오는지, 수정하지 않았을 때 해시 계산이 생략되는지 확인한다. 고아 삭제(KTD11) 및 파일 선행 복구(KTD6/KTD9) 시나리오가 자동화 테스트로 검증된다.
 
 ---
 
@@ -502,9 +520,10 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 **Approach**:
 1. CLI는 기존 `cappa` 스텁을 확장한다. `index`는 탐색·인덱싱을 실행하고 결과를 요약한다. `status`는 인덱싱된 디자인 시스템과 동기화 상태를 나열한다. `index`는 선검사를 거치지 않고 파일을 전량 다시 읽으므로 mtime 보존 변경(R21 감지 경계)에 대한 강제 재인덱싱 탈출구를 겸한다.
-2. 린터 적합성 테스트는 `node`로 vendored 패키지의 `lint --format json`을 실행하고 원본 대비 신규 findings를 비교한다. `tooling` 마커를 붙여 opt-in 레인에서 실행한다 — 마커는 이미 등록되어 있고 기본 `addopts`의 `-m 'not tooling'`이 기본 실행에서 제외한다.
-3. `node`가 없는 로컬 환경에서는 해당 테스트만 skip한다. 나머지 스위트는 순수 Python으로 실행 가능해야 한다. CI 검증 환경에는 Node를 설치해 `uv run pytest -m tooling`으로 린터 적합성 스위트를 필수로 실행한다 — skip은 로컬 전용이다.
-4. vendoring 대상은 tarball 또는 언팩된 `dist/`다. 갱신 절차를 README에 남긴다 — 스펙 버전이 올라가면 픽스처 기대값이 바뀔 수 있다.
+2. CLI는 `index`·`status` 실행 전 활성 DB에 대해 스키마 생성·버전 검증을 수행한다. FastAPI 수명주기(U7)와 무관하게 동작해야 R20의 "DB 삭제 후 재인덱싱이 항상 유효한 복구 경로" 계약이 CLI 경로에서도 성립한다. 버전 불일치 오류는 U7의 fail-fast 정책에 따라 전파한다.
+3. 린터 적합성 테스트는 `node`로 vendored 패키지의 `lint --format json`을 실행하고 원본 대비 신규 findings를 비교한다. `tooling` 마커를 붙여 opt-in 레인에서 실행한다 — 마커는 이미 등록되어 있고 기본 `addopts`의 `-m 'not tooling'`이 기본 실행에서 제외한다.
+4. `node`가 없는 로컬 환경에서는 해당 테스트만 skip한다. 나머지 스위트는 순수 Python으로 실행 가능해야 한다. CI 검증 환경에는 Node를 설치해 `uv run pytest -m tooling`으로 린터 적합성 스위트를 필수로 실행한다 — skip은 로컬 전용이다.
+5. vendoring 대상은 tarball 또는 언팩된 `dist/`다. 갱신 절차를 README에 남긴다 — 스펙 버전이 올라가면 픽스처 기대값이 바뀔 수 있다.
 
 **Test scenarios**:
 - Covers AE6. write-through로 방출된 파일이 원본 대비 린트 신규 findings 0건이다.
@@ -512,6 +531,8 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - 공식 `diff`가 원본과 방출본 사이에 토큰 변경 0건, `regression: false`를 보고한다.
 - `node`가 없는 환경에서 스위트가 skip으로 처리되고 실패하지 않는다.
 - `protokflow index`가 두 개의 디자인 시스템을 인덱싱하고 요약을 출력한다.
+- DB 파일이 없는 상태에서 최초 `protokflow index`가 스키마를 생성하고 인덱싱을 완료한다 (R20).
+- 스키마 버전이 불일치하는 DB에서 `protokflow index`·`status`가 오류를 전파한다 (U7 fail-fast 정책).
 - `protokflow status`가 동기화 상태를 나열한다.
 - mtime과 크기를 보존한 외부 변경 후 `protokflow index` 재실행이 변경을 흡수한다 (R21 감지 경계의 탈출구).
 - 인덱싱 대상이 없는 레포에서 `protokflow index`가 오류 없이 종료한다.
@@ -544,7 +565,8 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 **전역**
 - R16, R17, R20, R21, R23이 각각 하나 이상의 유닛으로 구현되고 테스트로 증명된다.
 - AE6, AE7, AE8, AE9가 자동화된 테스트로 존재하고 통과한다.
-- Verification Contract의 6개 게이트가 모두 통과한다.
+- 배치 고아 삭제(KTD11) 및 전 진입점 재조정(KTD6) 정책이 U6 자동화 테스트로 증명된다.
+- Verification Contract의 7개 게이트가 모두 통과한다.
 - `.protokflow/protokflow.db`를 삭제하고 `protokflow index`를 실행하면 모든 디자인 시스템과 토큰이 복원된다.
 - 프로토타입 트리는 이식 후에도 삭제하지 않는다. 제품 코드가 `.context/` 경로를 import 하지 않는다.
 - 시도했다가 폐기한 접근의 코드가 diff에 남아 있지 않다. 사용하지 않는 헬퍼, 주석 처리된 실험, 죽은 분기를 제거한다.

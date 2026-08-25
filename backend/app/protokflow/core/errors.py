@@ -1,69 +1,67 @@
-"""Rejection errors raised while parsing or patching DESIGN.md files."""
+"""Exception classes raised during DESIGN.md document parsing and serialization."""
 
 from __future__ import annotations
 
 
 class DesignMdError(ValueError):
-    """Base error for DESIGN.md contract violations."""
+    """Base exception for DESIGN.md format and specification violations."""
 
 
 class YamlAnchorError(DesignMdError):
-    """Front matter contains a YAML anchor or alias (KTD3).
+    """Raised when front matter contains YAML anchors or aliases.
 
-    Anchors and aliases are outside the design.md spec, and in-place patching
-    would silently corrupt their reference integrity, so indexing rejects the
-    whole document instead of loading a damaged state.
+    YAML anchors and aliases are not supported in the DESIGN.md specification
+    because in-place token patching cannot guarantee reference integrity.
+    Use standard token reference syntax (e.g. '{colors.primary}') instead.
     """
 
 
 class FencedYamlBlockError(DesignMdError):
-    """Guide body contains a fenced yaml block (KTD10).
+    """Raised when the Markdown guide body contains a fenced YAML block.
 
-    Fenced yaml in the body is a non-normative extension; tokens must live in
-    the front matter so a single serialization path owns the file.
+    Token definitions must reside in the YAML front matter block rather than
+    fenced code blocks within the guide body.
     """
 
 
 class UnterminatedFrontMatterError(DesignMdError):
-    """Opening front matter fence has no matching closing fence."""
+    """Raised when an opening front matter fence ('---') lacks a matching closing fence."""
 
 
 class UnknownTokenPathError(DesignMdError):
-    """A patch references a token path absent from the front matter."""
+    """Raised when a patch targets a token path that does not exist in the front matter."""
 
 
 class MixedLineEndingsError(DesignMdError):
-    """Document mixes LF and CRLF line endings, or uses bare CR.
+    """Raised when a document contains inconsistent line endings or bare CR characters.
 
-    One line-ending style per document is required so re-emission stays
-    byte-faithful instead of silently rewriting every line.
+    A uniform line-ending style (LF or CRLF) is required to ensure lossless,
+    byte-faithful serialization.
     """
 
 
 class InvalidFrontMatterError(DesignMdError):
-    """Front matter is not valid YAML syntax or not a top-level mapping."""
+    """Raised when front matter contains invalid YAML syntax or is not a top-level mapping."""
 
 
 class NonScalarTokenError(DesignMdError):
-    """A token group or token leaf does not have the required scalar shape.
+    """Raised when a token group or token leaf does not conform to the expected schema.
 
-    Token groups must be mappings, nesting is limited to one level below the
-    group, and leaves must be scalar values; anything else would be indexed
-    as a lossy Python representation.
+    Token groups must be mappings with at most one level of sub-group nesting,
+    and all token leaves must be scalar values (strings, numbers, or booleans).
     """
 
 
 class NullTokenValueError(DesignMdError):
-    """A token value is an explicit YAML null or an empty value.
+    """Raised when a token value is an explicit YAML null or empty.
 
-    Null is not a meaningful design token value and cannot be distinguished
-    from an empty string after normalization, so it is rejected up front.
+    Design tokens must have non-null, non-empty scalar values.
     """
 
 
 class DottedTokenNameError(DesignMdError):
-    """A token name contains a dot.
+    """Raised when a token key contains a period character.
 
-    Dots are reserved for the flattened token path notation; a dotted YAML
-    key would produce a path that can never be patched.
+    Periods are reserved as delimiters for flattened token paths (e.g. 'colors.primary')
+    and cannot be used inside individual key names.
     """

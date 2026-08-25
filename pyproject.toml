@@ -16,6 +16,7 @@ dependencies = [
   "pydantic==2.13.4",
   "pydantic-settings==2.15.0",
   "pyyaml==6.0.3",
+  "ruamel.yaml==0.19.1",
   "sqlalchemy==2.0.52",
   "starlette==1.6.0",
   "starlette-context==0.5.1",

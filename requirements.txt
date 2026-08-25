@@ -88,7 +88,9 @@ pyyaml==6.0.3
 rich==15.0.0
     # via cappa
 ruamel-yaml==0.19.1
-    # via pre-commit-hooks
+    # via
+    #   pre-commit-hooks
+    #   protokflow
 ruff==0.15.22
 sqlalchemy==2.0.52
     # via protokflow

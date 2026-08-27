@@ -1,4 +1,4 @@
-"""External-change reconciliation for indexed DESIGN.md sources (R21, KTD6)."""
+"""External-change reconciliation for indexed DESIGN.md sources."""
 
 from __future__ import annotations
 
@@ -179,7 +179,7 @@ def stat_matches(system: DesignSystem, stat: os.stat_result) -> bool:
 
     The early return relies on the write-through invariant that the stored
     digest and stat describe the same bytes: the file is only read and hashed
-    after this cheap comparison disagrees (R21).
+    after this cheap comparison disagrees.
     """
     return (
         system.source_mtime_ns is not None
@@ -208,7 +208,7 @@ async def reconcile_design_system(
 ) -> ReconciledSystem:
     """Absorb external source changes before a service entry point acts.
 
-    Decision order (KTD6): stat pre-check on (mtime_ns, size); on mismatch
+    Decision order: stat pre-check on (mtime_ns, size); on mismatch
     compute sha256 and compare with source_digest — equal means a touched file
     and refreshes metadata only; different means the file changed and the
     system is re-indexed from it. A missing file keeps the DB row and reports

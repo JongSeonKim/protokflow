@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.protokflow.model import DesignSystem
+from backend.app.protokflow.model.types import utcnow
 
 
 class CRUDDesignSystem(CRUDPlus[DesignSystem]):
@@ -73,6 +74,7 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
         existing.source_mtime_ns = obj.source_mtime_ns
         existing.source_size = obj.source_size
         existing.synced_at = obj.synced_at
+        existing.unbound_at = None
         await db.flush()
 
         return existing
@@ -87,9 +89,10 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
         """
         Clear the source binding of rows of one root missing from discovery
 
-        Only the source_* binding columns and synced_at are cleared, so an
-        orphaned row survives as a DB-only row and a later index run rebinds
-        it by slug with its id, tokens and provenance intact.
+        Only the source_* binding columns and synced_at are cleared, and
+        unbound_at is stamped with the current timestamp. An orphaned row
+        survives as a DB-only row and a later index run rebinds it by slug
+        with its id, tokens and provenance intact while clearing unbound_at.
 
         Deleting instead would reach far past the file binding it means to
         drop: design_systems.id is referenced by prototype_runs
@@ -122,6 +125,7 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
                 source_mtime_ns=None,
                 source_size=None,
                 synced_at=None,
+                unbound_at=utcnow(),
             )
         )
         result = cast(CursorResult[Any], await db.execute(statement))

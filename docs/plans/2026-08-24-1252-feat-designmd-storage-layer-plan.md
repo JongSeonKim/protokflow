@@ -214,7 +214,7 @@ flowchart LR
 
 동시성 제어는 `AsyncReadWriteLock`(판독/기록 잠금)과 slug 단위 상호배제(`_lock_for(slug)`)의 2단계 계층 구조를 적용한다. `index_all` 실행 시에는 배타적 기록(write) 잠금을 획득하여 조회 및 패치를 차단하며, 개별 slug의 조회 요청은 판독(read) 잠금을 공유하여 병렬 처리하되 slug별 배타성은 `_lock_for(slug)`를 통해 보장한다. 단일 뮤텍스 방식은 전체 인덱싱 잠금과 slug별 잠금의 단위를 분리하지 못해 slug 수준의 병렬성을 저해하므로 배제한다.
 
-`design_token_dao.replace`는 전달된 토큰 엔티티 컬렉션이 모두 교체 대상 부모(`design_system_id`)에 속하는지 삭제문 실행 전에 검증한다. `MappedAsDataclass` 특성상 `storage/` 계층의 빌드 시점에는 소유권 검증이 불가하므로, 실제 DB 반영 시점인 DAO 계층에서 무결성을 검증한다. 본 검증 로직의 계층 배치와 KTD5 원칙 간의 아키텍처 결정 사항은 `docs/explainers/2026-08-27-designmd-storage-contract-shift.html`(결정 B)를 참조한다.
+`design_token_dao.replace`는 전달된 토큰 엔티티 컬렉션이 모두 교체 대상 부모(`design_system_id`)에 속하는지 삭제문 실행 전에 검증한다. `MappedAsDataclass` 특성상 `storage/` 계층의 빌드 시점에는 소유권 검증이 불가하므로, 실제 DB 반영 시점인 DAO 계층에서 즉시 사전조건(Preconditions)으로 무결성을 검증한다. 이는 KTD5 원칙의 정규화에 따른 설계 결정이다.
 
 #### 재조정 선검사 판정
 

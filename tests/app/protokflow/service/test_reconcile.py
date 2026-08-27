@@ -475,6 +475,7 @@ async def test_index_all_unbinds_orphaned_file_backed_rows(
         assert admin.source_mtime_ns is None
         assert admin.source_size is None
         assert admin.synced_at is None
+        assert admin.unbound_at is not None
         assert await design_system_dao.get_by_slug(session, "default") is not None
         assert await design_token_dao.get_all(session, admin_id)
         assert await design_token_dao.get_all(session, default_id)
@@ -501,6 +502,7 @@ async def test_index_all_rebinds_an_unbound_row_without_reissuing_its_id(
     rebound = await _system_by_slug("default")
     assert rebound.id == original_id
     assert rebound.source_path == "DESIGN.md"
+    assert rebound.unbound_at is None
     async with db.async_db_session() as session:
         derived_row = await design_system_dao.get_by_slug(session, "derived")
         assert derived_row is not None

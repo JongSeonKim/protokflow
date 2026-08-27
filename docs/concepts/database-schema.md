@@ -107,7 +107,7 @@ DDL은 SQLite 기준의 논리 스키마이며, 실제 정의는 SQLAlchemy 2.0 
 
 - **기본키**: `TEXT` ULID(사전순 정렬 = 생성순). 정수 자동증가는 패치 이력 테이블(`token_patches`)에만 한정한다.
 - **공통 감사 컬럼 (`Base`)**: 모든 테이블은 `backend/common/model.py`의 `Base`(`DateTimeMixin` + `LogicalDeleteMixin`)를 상속하여 `created_time`(생성 시각), `updated_time`(NULL 허용, 갱신 시 자동 기록), `deleted`(기본 `0`, 논리 삭제 표식), `deleted_time`을 공통 보유한다. 아래 테이블 정의에는 도메인 컬럼만 기재한다.
-- **타임스탬프**: 감사 컬럼(`created_time`/`updated_time`/`deleted_time`)은 공통 `Base`의 `TimeZone` 타입(`DateTime(timezone=True)`, `DATETIME_TIMEZONE` 기준 aware)으로 매핑한다. 도메인 타임스탬프(`design_systems.synced_at`)는 `Timestamp`(naive 거부, UTC 정규화)를 사용한다(§8). SQLite는 ISO-8601 TEXT, Postgres는 `timestamptz`로 저장된다.
+- **타임스탬프**: 감사 컬럼(`created_time`/`updated_time`/`deleted_time`)은 공통 `Base`의 `TimeZone` 타입(`DateTime(timezone=True)`, `DATETIME_TIMEZONE` 기준 aware)으로 매핑한다. 도메인 타임스탬프(`design_systems.synced_at`, `design_systems.unbound_at`)는 `Timestamp`(naive 거부, UTC 정규화)를 사용한다(§8). SQLite는 ISO-8601 TEXT, Postgres는 `timestamptz`로 저장된다.
 - **JSON 컬럼**: `sa.JSON`(SQLite TEXT ↔ Postgres `jsonb`). 인덱싱 대상이 아닌 소규모 구조에만 사용한다.
 - **삭제**: 소유 관계는 모두 `ON DELETE CASCADE`. SQLite 커넥션마다 `PRAGMA foreign_keys=ON`을 적용한다. `deleted` 플래그는 런 프루닝·아카이빙 등 소프트 삭제 표식용이며, FK 참조 무결성은 여전히 물리 CASCADE로 처리된다.
 - **제약 이름**: 모든 CHECK/UNIQUE/FK/Index에 명시적 이름을 부여한다. SQLAlchemy `MetaData(naming_convention=...)` 규칙(`ck_`, `uq_`, `fk_`, `ix_` 접두사)을 강제하여 마이그레이션 도구(Alembic) 도입 시 불필요한 변경 감지(허위 감지)를 방지한다.
@@ -146,7 +146,8 @@ CREATE TABLE design_systems (
   source_digest   TEXT,                           -- 마지막 동기화 시점 파일의 sha256
   source_mtime_ns INTEGER,                        -- mtime 나노초 정수 (선검사용)
   source_size     INTEGER,                        -- 크기  (선검사용)
-  synced_at       TIMESTAMP
+  synced_at       TIMESTAMP,                      -- 마지막 파일 동기화 시각
+  unbound_at      TIMESTAMP                       -- 파일 연결 해제(고아 전환) 시각; NULL = 활성/순수 파생
 );
 ```
 
@@ -156,6 +157,7 @@ CREATE TABLE design_systems (
 - **`front_matter_raw`는 in-place 패치 write-through의 기반이다.** Front Matter 원문을 주석, 빈 줄, 따옴표 스타일, 키 순서까지 바이트 단위로 보존한다. 저장 시 이 원문을 라운드트립 파서로 읽어 대상 토큰 위치만 치환하므로 Git diff 최소화(단일 토큰 변경 시 1줄 diff) 및 사용자 서식 보존을 보장한다. 정규화된 행 기반 직렬화 재생성 방식과 달리 불필요한 diff 노이즈를 차단한다. 파일 미연동 시스템은 생성 시점에 1회 직렬화하여 이 컬럼을 초기화한다.
 - `guide_markdown`은 `design://systems/{slug}` 리소스로 반환되어 에이전트의 프롬프트 컨텍스트가 된다.
 - `source_path`가 NULL인 디자인 시스템은 **DB 전용**(파일 미연동)이다. 파생 디자인 시스템은 기본적으로 DB 전용으로 생성되어 Git 트리를 오염시키지 않으며, 필요 시 명시적 export를 통해 `design/{slug}.md` 파일로 변환된다.
+- **`unbound_at`은 파일 탐색 집합에서 누락되어 소스 연결이 해제(Unbind)된 시각을 기록한다.** 파일 부재 시 하드 삭제 대신 `source_* = NULL` 및 `unbound_at = now()`로 전환하여 하위 실행 데이터(`prototype_runs` 등)의 연쇄 파괴를 방지한다. `source_path IS NULL`이면서 `unbound_at IS NULL`인 순수 파생 시스템(`derived_from_id` 보유)과 고아 레코드를 명확히 식별하며, 재인덱싱 시 파일이 복귀하면 `unbound_at`을 `NULL`로 리셋한다.
 - **`source_path`는 `source_root` 기준 상대경로이다.** 인덱싱 시점의 루트 절대경로(resolved)를 `source_root`에 기록하며, 토큰 패치는 호출자가 넘긴 `repo_root`의 resolved 값이 이와 일치할 때만 파일을 해석한다. 불일치(`NULL` 포함) 시 `SourceRootMismatchError`로 거부하고 재인덱싱으로 재바인딩한다 — 여러 체크아웃·워크트리를 오가며 같은 상대경로의 무관한 파일을 패치하는 사고를 막기 위한 계약이다.
 - `derived_from_id`는 **출처(provenance) 추적용 메타데이터**이다. 파생 시스템도 완전 해석된 자기완결 토큰 트리를 가지며, `promote_tokens`의 원본 병합 대상 식별 및 `/admin` UI의 diff 표시에 사용된다.
 - `source_mtime_ns`/`source_size`는 도구 호출 시 파일 변경 여부를 저비용(`stat`)으로 선검사하여 해시 계산 오버헤드를 회피하는 용도이다(§6). mtime은 부동소수점 초가 아닌 나노초 정수(`st_mtime_ns`)로 저장한다 — 검증 결과 APFS는 1ns 단위까지 정확히 저장하며 SQLite `INTEGER`는 무손실 왕복하지만, 초 단위 `REAL`(float64)은 현재 epoch에서 최소 가시 간격(ULP)이 약 238ns여서 그보다 작은 시간 간격의 변경을 식별하지 못한다.
@@ -203,6 +205,7 @@ CREATE INDEX ix_design_tokens_ds_tier ON design_tokens (design_system_id, tier);
 
 - **행 단위 정규화**: 개별 토큰 PATCH 시의 경합을 제거하고, `UNIQUE(design_system_id, token_path)`로 경로 중복을 방지하며, 시스템 간 diff 조회를 단순화한다.
 - **`id`는 불안정하다 — 토큰의 안정 식별자는 `(design_system_id, token_path)`다.** 토큰 동기화(`design_token_dao.replace`)는 해당 시스템의 토큰 행을 전량 삭제 후 재삽입하므로 모든 `id`가 동기화마다 새로 발급된다. 어떤 테이블도 `design_tokens.id`를 외래키로 참조하지 않는 것이 계약이다. 토큰 단위 소비자(주석·오버라이드·이력, 파생 시스템의 상위 토큰 참조 등)는 항상 `(design_system_id, token_path)` 복합키로 토큰을 지칭한다.
+- **Write-Through 단일 원천 원칙**: UI(/admin)나 에이전트(agent)에 의한 토큰 변경은 항상 단일 진실 원천인 `DESIGN.md` 파일에 in-place write-through로 선반영된 후 DB로 동기화된다. `origin`은 토큰 변경을 유발한 주체 메타데이터(`design_md`, `admin_ui`, `agent`)를 추적한다.
 - **원문 값 보존**: `{colors.primary}` 참조의 해석 및 순환 참조 검출은 코어 엔진(`protokflow.core`)의 캐스케이드 해석기 책임이며(R1), DB는 원문 문자열을 그대로 저장한다.
 - `tier`는 계층별 조회(`:root` CSS 변수 생성 시 foundation 우선 정렬 등)를 지원하기 위한 인덱싱 컬럼이다.
 
@@ -311,14 +314,14 @@ CREATE TABLE exports (
 
 | 트리거 | 트랜잭션 (단일) |
 |---|---|
-| 파일 → DB 재인덱싱 (R16) | `design_systems` upsert + `design_tokens` 전량 동기화 |
-| `/admin` 토큰 편집 (R18) | `design_tokens` update(`origin='admin_ui'`) + `DESIGN.md` write-through |
+| 파일 → DB 재인덱싱 (R16) | `design_systems` upsert + `design_tokens` 전량 동기화<br>(파일 누락 시 `unbind_orphan_sources`로 `unbound_at=now()` 기록) |
+| `/admin` 토큰 편집 (R18) | `DESIGN.md` in-place write-through 선반영 + DB 토큰 동기화(`replace`) |
 | `create_prototype_run` (R5) | `prototype_runs` insert(스냅샷 포함) + `candidates` N행 insert |
 | `patch_tokens` (R10) | `token_patches` N행 insert + `candidates.token_overrides` update |
 | `update_slot_custom` (R5) | `slot_contents` upsert |
 | `export_prototype` (R14) | `exports` insert + `prototype_runs.status='exported'` |
 | `promote_tokens` — 신규 타깃 | `design_systems` insert(`derived_from_id` 설정, `source_path=NULL`) + `design_tokens` N행 insert |
-| `promote_tokens` — 기존 타깃 | `design_tokens` N행 upsert(`origin='agent'`) + 타깃이 파일 연동이면 write-through |
+| `promote_tokens` — 기존 타깃 | `design_tokens` N행 upsert(`origin='agent'`) + 타깃이 파일 연동이면 in-place write-through |
 | DB → 파일 export (R16) | `design_systems`(`source_path`, 동기화 메타) update |
 
 모든 도구 호출은 단일 트랜잭션으로 처리된다(§1 목표 1). 쓰기 트랜잭션의 소유권은 서비스 계층에 일원화되며, MCP/HTTP 어댑터는 DB 세션을 직접 제어하지 않는다.
@@ -343,7 +346,7 @@ DESIGN.md 표준 스펙은 참조 문법으로 `{path.to.token}` 문자열 포�
 
 ### 동시성
 
-하나의 MCP 프로세스 내에서 MCP 어댑터와 ASGI 프리뷰 서버가 코어 인스턴스를 공유한다. 또한 동일 레포지토리에 대해 복수의 프로세스(예: 에이전트 세션 + 터미널의 `protokflow serve`)가 접근할 수 있으므로, SQLite는 WAL 모드 및 `busy_timeout`을 기본 적용하여 단일 트랜잭션 경합을 처리한다.
+하나의 MCP 프로세스 내에서 MCP 어댑터와 ASGI 프리뷰 서버가 코어 인스턴스를 공유한다. 서비스 계층은 `AsyncReadWriteLock`(Writer-Preferring)과 슬러그별 배타 잠금(`_lock_for(slug)`)을 통해 판독자 병렬성과 기록자 배타성을 보장하며, 동일 토큰에 대한 동시 패치 요청은 직렬화 후 **Last-Writer-Wins (LWW)** 계약으로 수렴한다. SQLite는 WAL 모드 및 `busy_timeout`을 기본 적용하여 프로세스 간 단일 트랜잭션 경합을 처리한다.
 
 ---
 
@@ -358,13 +361,13 @@ DESIGN.md 표준 스펙은 참조 문법으로 `{path.to.token}` 문자열 포�
 | R10 (핫패치) | `token_patches`, `candidates.token_overrides` |
 | R11 (뷰포트 매트릭스) | `candidates.position` |
 | R14/R15 (코드 내보내기) | `exports.format` |
-| R16 (DESIGN.md 양방향 직렬화) | `design_systems` 동기화 컬럼(`title`, `spec_version`, `front_matter_extras`, `front_matter_raw`, `guide_markdown`, `source_*`), `design_tokens` |
+| R16 (DESIGN.md 양방향 직렬화) | `design_systems` 동기화 컬럼(`title`, `spec_version`, `front_matter_extras`, `front_matter_raw`, `guide_markdown`, `source_*`, `unbound_at`), `design_tokens` |
 | R17 (SQLite 영속화) | 전체 스키마 + `PRAGMA user_version` |
 | R18 (관리 UI) | `design_systems`, `design_tokens.origin` |
 | R19 (런 보존 정책) | `prototype_runs.status`, `prototype_runs.created_time` |
 | R20 (스키마 버전 검사) | `PRAGMA user_version` |
-| R21 (파일 선검사 및 재인덱싱) | `design_systems.source_mtime_ns`, `design_systems.source_size`, `design_systems.source_digest` |
-| R22 (파생 디자인 시스템) | `design_systems.derived_from_id`, `design_systems.source_path` |
+| R21 (파일 선검사 및 재인덱싱) | `design_systems.source_mtime_ns`, `design_systems.source_size`, `design_systems.source_digest`, `design_systems.unbound_at` |
+| R22 (파생 디자인 시스템) | `design_systems.derived_from_id`, `design_systems.source_path`, `design_systems.unbound_at` |
 
 ---
 
@@ -374,7 +377,7 @@ Postgres 확장 경로는 열어두되, 현재 단계의 준비 작업은 방언
 
 **현재 적용 항목 (표준 SQL 및 타입 안전성)**
 - `backend/app/protokflow/model/types` 모듈을 통해 단일화된 커스텀 타입 정의:
-  - `Timestamp` — naive `datetime`을 거부하고 UTC aware 객체만 수용·정규화. 도메인 타임스탬프 컬럼(`design_systems.synced_at`)에 적용.
+  - `Timestamp` — naive `datetime`을 거부하고 UTC aware 객체만 수용·정규화. 도메인 타임스탬프 컬럼(`design_systems.synced_at`, `design_systems.unbound_at`)에 적용.
   - `Ulid` — TEXT(26) 기반 고정 길이 식별자.
   - `Json` — `sa.JSON` 매핑.
 - 모든 제약 조건(CHECK, UNIQUE, FK, Index)에 명시적 네이밍 규칙 적용.
@@ -394,7 +397,10 @@ Postgres 확장 경로는 열어두되, 현재 단계의 준비 작업은 방언
 
 - **0.1.0 초기 버전**: `MappedBase.metadata.create_all()` 및 `PRAGMA user_version` 버전 검사를 적용한다(§5.1). 버전 불일치 시 명확한 오류 및 안내(DB 삭제 후 재인덱싱)를 제공한다.
 - **복구 메커니즘**: DB가 손상되거나 삭제되더라도 `DESIGN.md` 파일들로부터 디자인 시스템과 토큰 트리를 언제든 재인덱싱하여 복구할 수 있다.
-- **런 보존 정책**: 런 데이터는 기본값으로 디자인 시스템당 최근 50개를 유지하며, 초과분은 `archived` 상태로 전환 후 `protokflow prune` 명령으로 정리한다. 디자인 시스템과 토큰은 자동 삭제 대상에서 제외된다.
+- **고아 레코드 및 런 보존 정책**:
+  - 파일 삭제 시 하드 삭제 대신 바인딩 해제(Unbind, `unbound_at` 타임스탬프 기록)하여 하위 실행 이력(`prototype_runs` 등)의 연쇄 파괴를 방지한다.
+  - 런 데이터는 기본값으로 디자인 시스템당 최근 50개를 유지하며, 초과분은 `archived` 상태로 전환된다.
+  - 고아 레코드 및 아카이브된 런은 자동 삭제되지 않으며, U8 CLI의 명시적 정리 명령(`protokflow index --prune` 또는 `protokflow prune`)을 통해 안전하게 정리된다.
 - **커넥션 설정**: 커넥션 초기화 시 `PRAGMA foreign_keys=ON`, `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout`을 강제하여 CASCADE 정합성과 다중 프로세스 동시성을 보장한다.
 
 ---

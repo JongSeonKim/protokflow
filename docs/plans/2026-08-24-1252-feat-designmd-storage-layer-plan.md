@@ -136,7 +136,7 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 
 - KTD4. **단일 `sa.Text` 컬럼 기반 토큰 값 저장** — YAML 숫자(`fontWeight: 600`, `lineHeight: 1.1` 등)를 문자열로 저장한다. 스펙상 bare number와 quoted string의 의미적 동등성이 보장되므로(`fontWeight`: "both are equivalent"), 불필요한 `value_kind` 타입 판별 컬럼을 추가하지 않는다. 패치된 토큰은 값을 교체하되 스칼라 표기(인용·bare 여부)는 원문을 상속하며, 무편집 왕복 시에도 원문의 스칼라 표기(bare 숫자 포함)를 그대로 보존한다. `Governs R17`
 
-- KTD5. **repository / service 2계층을 도입한다.** `crud/`는 SQLAlchemy 문장만 소유하고 트랜잭션과 파일 I/O는 `service/`가 소유한다. 스캐폴드가 `api/v1/`·`schema/`·`model/`를 이미 배치했으므로 같은 규약을 따른다. 쓰기 트랜잭션 소유권을 서비스에 일원화하는 스키마 문서 §6 규정과 일치한다. `Governs R17`
+- KTD5. **service / storage / crud 책임을 분리한다.** `service/`는 유스케이스 정책, 잠금, repository-root 검증, 세션과 트랜잭션을 소유한다. `storage/design_source.py`는 파일 관찰·읽기·해시·파싱을, `storage/design_system_store.py`는 caller-owned session으로 ORM 매핑과 다중 DAO 저장을 소유한다. `crud/`는 SQLAlchemy 문장만 소유하고 커밋하지 않는다. storage는 새 비즈니스 계층이나 Repository·Unit of Work 추상화가 아니다. `Governs R17`
 
 - KTD6. **재조정은 서비스 진입점의 선검사로 구현한다.** 파일 워처 데몬을 두지 않는다. 조회·패치 진입점마다 `(mtime_ns, size)`를 검사하고 불일치 시에만 sha256을 계산한다. mtime은 정수 나노초로 저장한다 — 실측(APFS·SQLite)에서 파일시스템이 1ns까지 정확히 저장하고 SQLite `INTEGER`는 무손실 왕복하는 반면, 초 단위 `REAL`(float64)은 현재 epoch에서 최소 가시 간격이 약 238ns(ULP)여서 저장 계층이 감지 정밀도를 저하시킨다. 조회·패치 모든 진입점이 이 선검사를 통과하므로 파일 선행 상태(KTD9)를 포함한 진입 전 외부 변경은 재조정으로 흡수되고, `ConcurrentModificationError`는 선검사 통과 후 원자적 쓰기 전 창의 실경합만 수호한다. 이는 어떤 진입점이 다음 호출이어도 파일 기준 복구가 성립해야 KTD9(파일 선행) 계약이 완결되기 때문이다. `Governs R21`
 
@@ -166,10 +166,15 @@ flowchart LR
         PATCH["designmd.patch<br/>원문 in-place 치환 KTD1"]
     end
 
-    subgraph SVC["service (트랜잭션 소유, KTD5)"]
+    subgraph SVC["service (정책·잠금·트랜잭션 소유, KTD5)"]
         IDX["index_design_system"]
-        REC["reconcile<br/>선검사 R21"]
+        REC["_reconcile_source<br/>선검사 정책 R21"]
         WT["apply_token_patch"]
+    end
+
+    subgraph STORE["storage (기술 어댑터, KTD5)"]
+        SOURCE["design_source<br/>관찰 · 읽기 · 해시 · 파싱"]
+        DSSTORE["design_system_store<br/>ORM 매핑 · DAO 조합"]
     end
 
     subgraph DB["SQLite (.protokflow/protokflow.db)"]
@@ -180,17 +185,19 @@ flowchart LR
     ROOT --> DISC
     SIB --> DISC
     DISC --> IDX
-    IDX --> PARSE
-    PARSE --> DS
-    PARSE --> DT
-    REC -.선검사.-> ROOT
-    REC --> IDX
+    IDX --> SOURCE
+    SOURCE --> PARSE
+    PARSE --> DSSTORE
+    DSSTORE --> DS
+    DSSTORE --> DT
+    REC -.관찰.-> SOURCE
+    REC --> DSSTORE
     WT --> DS
     DS --> PATCH
     PATCH -->|write-through| ROOT
 ```
 
-파싱과 직렬화는 DB를 모른다. 서비스가 파일 I/O와 트랜잭션 경계를 모두 소유한다.
+파싱과 직렬화는 DB를 모른다. service는 정책과 트랜잭션 경계를, storage 어댑터는 파일 접근과 ORM 매핑을 소유한다.
 
 #### 재조정 선검사 판정
 
@@ -475,6 +482,37 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - DB 전용 행(`source_path` NULL)은 `index_all` 재실행 후에도 유지된다.
 
 **Verification**: 인덱싱 후 파일을 외부에서 수정하고 조회했을 때 새 값이 나오는지, 수정하지 않았을 때 해시 계산이 생략되는지 확인한다. 고아 삭제(KTD11) 및 파일 선행 복구(KTD6/KTD9) 시나리오가 자동화 테스트로 검증된다.
+
+---
+
+### U6.1. 재조정 책임 경계 정렬
+
+**Goal**: U6의 외부 변경 재조정 동작을 바꾸지 않고, 파일 관찰·ORM 저장·서비스 정책의 책임을 명확한 기술 경계로 분리한다.
+
+**Requirements**: R17, R21. KTD5·KTD6·KTD9·KTD11의 기존 계약을 유지한다.
+
+**Dependencies**: U6.
+
+**Files**:
+- `backend/app/protokflow/storage/design_source.py` — 파일 관찰, 읽기, 해시와 파싱
+- `backend/app/protokflow/storage/design_system_store.py` — caller-owned session 기반 ORM 매핑과 DAO 조합
+- `backend/app/protokflow/service/design_system_service.py` — 재조정 정책, lock, repository-root 검증과 트랜잭션
+- `tests/app/protokflow/storage/` — 어댑터 메커니즘 검증
+- `tests/app/protokflow/service/` — 조회·인덱싱·패치 정책 및 복구 검증
+
+**Approach**:
+1. source adapter는 `UNCHANGED`·`TOUCHED`·`CHANGED`·`MISSING`의 중립 관찰 결과만 반환하고 DB나 query/patch 의도를 알지 못한다.
+2. store adapter는 호출자가 제공한 `AsyncSession`으로 snapshot 동기화와 touch 메타데이터 갱신을 수행하며 session 생성·트랜잭션·commit·rollback·파일 I/O를 수행하지 않는다.
+3. `DesignSystemService`가 관찰 결과를 조회와 패치 의미로 해석하고 모든 재조정 트랜잭션·행 재검사·기존 lock을 소유한다. 이전 mixed `service/reconcile.py`는 제거하며 호환 alias를 남기지 않는다.
+4. 파일 관찰과 persistence의 직접 검증은 storage 테스트에, end-to-end query·patch·CAS·복구 검증은 service 테스트에 둔다.
+
+**Test scenarios**:
+- stat 일치, touch-only, changed, missing 관찰 결과와 단일 descriptor snapshot 일관성을 storage 테스트가 증명한다.
+- caller-owned transaction rollback과 token replacement·reparenting 거부를 store 테스트가 증명한다.
+- get과 apply_token_patch가 동일한 재조정 경로를 통과하고 missing 결과를 각각 stale과 `MissingSourceFileError`로 해석함을 service 테스트가 증명한다.
+- changed snapshot이 재파싱 없이 patch baseline 및 CAS digest로 재사용되고, 재조정 중 삭제된 행은 되살아나지 않음을 service 테스트가 증명한다.
+
+**Verification**: `service/reconcile.py`와 `for_patch` 참조가 없고, source adapter에는 SQLAlchemy·CRUD·ORM·database-session import가 없으며, store adapter는 session lifecycle을 만들거나 commit하지 않는다. U6의 기존 동작과 Product Contract는 변경하지 않는다.
 
 ---
 

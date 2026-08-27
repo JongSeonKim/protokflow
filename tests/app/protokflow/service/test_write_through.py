@@ -18,7 +18,7 @@ from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.error.design_md import UnknownTokenPathError
 from backend.app.protokflow.service import design_system_service as service_module
-from backend.app.protokflow.service import reconcile as reconcile_module
+from backend.app.protokflow.storage import design_source as design_source_module
 from backend.app.protokflow.service.design_system_service import design_system_service
 from backend.app.protokflow.error.storage import (
     MissingSourceFileError,
@@ -417,15 +417,15 @@ async def test_source_metadata_describes_one_file_version(
     )
     assert len(external_edit) != len(indexed)
 
-    real_parse = reconcile_module.parse_design_content
+    real_parse = design_source_module.parse_design_content
 
     def parse_after_external_save(path: Path, content: bytes) -> object:
-        # An editor saves a longer document once the bytes have been read.
+        # Simulate a concurrent write between read and parse.
         design_md_path.write_bytes(external_edit)
         return real_parse(path, content)
 
     monkeypatch.setattr(
-        reconcile_module, "parse_design_content", parse_after_external_save
+        design_source_module, "parse_design_content", parse_after_external_save
     )
 
     await design_system_service.index_all(repo_root=tmp_path)
@@ -532,14 +532,14 @@ async def test_patch_parses_the_document_only_once(
     await design_system_service.index_all(repo_root=tmp_path)
 
     parses = 0
-    real_parse = reconcile_module.parse_design_md
+    real_parse = design_source_module.parse_design_md
 
     def counting_parse(text: str) -> object:
         nonlocal parses
         parses += 1
         return real_parse(text)
 
-    monkeypatch.setattr(reconcile_module, "parse_design_md", counting_parse)
+    monkeypatch.setattr(design_source_module, "parse_design_md", counting_parse)
 
     await design_system_service.apply_token_patch(
         repo_root=tmp_path, slug="default", token_patches=token_patches
@@ -598,9 +598,8 @@ async def test_commit_failure_leaves_file_ahead_of_database(
         replaced.append(design_system_id)
         return rows
 
-    # Session.flush() drives SessionTransaction.commit too, so failing every
-    # commit would abort before the token replacement ever runs. Only the commit
-    # the transaction context manager performs on exit may fail here.
+    # Only the commit performed by the transaction context manager on exit may
+    # fail; failing all commits would abort before token replacement runs.
     real_commit = SessionTransaction.commit
     real_exit = SessionTransaction.__exit__
     exiting = False

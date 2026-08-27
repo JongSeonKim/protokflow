@@ -15,6 +15,7 @@ from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.error.storage import ConcurrentModificationError
 from backend.app.protokflow.service import design_system_service as service_module
 from backend.app.protokflow.service.design_system_service import design_system_service
+from backend.app.protokflow.storage import design_source as design_source_module
 from backend.database import db
 
 
@@ -58,8 +59,7 @@ async def test_external_modification_before_entry_is_absorbed_into_patch(
     design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
     await design_system_service.index_all(repo_root=tmp_path)
 
-    # External modification lands before the patch enters: reconciliation must
-    # absorb it instead of rejecting the patch (KTD6).
+    # External modification before entry; reconciliation absorbs it.
     external_content = _DESIGN_MD.replace("#222222", "#333333")
     design_md_path.write_text(external_content, encoding="utf-8")
 
@@ -82,6 +82,42 @@ async def test_external_modification_before_entry_is_absorbed_into_patch(
     assert tokens["colors.primary"] == "#0B0E14"
     assert tokens["colors.secondary"] == "#333333"
     assert updated.source_digest == system.source_digest
+
+
+async def test_changed_reconciliation_snapshot_is_patch_baseline(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed source is parsed once and its snapshot feeds the patch directly."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+    design_md_path.write_text(
+        _DESIGN_MD.replace("#222222", "#333333"), encoding="utf-8"
+    )
+
+    parses = 0
+    real_parse = design_source_module.parse_design_content
+
+    def count_parse(path: Path, content: bytes) -> object:
+        nonlocal parses
+        parses += 1
+        return real_parse(path, content)
+
+    monkeypatch.setattr(design_source_module, "parse_design_content", count_parse)
+
+    await design_system_service.apply_token_patch(
+        repo_root=tmp_path,
+        slug="default",
+        token_patches={"colors.primary": "#0B0E14"},
+    )
+
+    assert parses == 1
+    patched_text = design_md_path.read_text(encoding="utf-8")
+    assert "secondary: '#333333'" in patched_text
+    assert "primary: '#0B0E14'" in patched_text
 
 
 async def test_empty_patch_absorbs_external_change_without_rewriting_file(
@@ -161,7 +197,7 @@ async def test_file_ahead_state_is_absorbed_by_next_patch(
 
     monkeypatch.undo()
 
-    # The file is ahead of the DB; the next patch must reconcile first (KTD9).
+    # File is ahead of DB; next patch reconciles first.
     await design_system_service.apply_token_patch(
         repo_root=tmp_path,
         slug="default",
@@ -213,7 +249,7 @@ async def test_concurrent_modification_in_write_window_raises_and_discards_temp(
             token_patches={"colors.primary": "#0B0E14"},
         )
 
-    # The external edit is preserved and no temporary file leaked.
+    # External edit preserved; no temp file leaked.
     assert design_md_path.read_text(encoding="utf-8") == external_content
     assert [path.name for path in tmp_path.iterdir()] == ["DESIGN.md"]
     system_after = await _system_by_slug("default")

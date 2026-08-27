@@ -20,7 +20,8 @@ from backend.app.protokflow.error.storage import (
     SourceRootMismatchError,
     UnknownDesignSystemError,
 )
-from backend.app.protokflow.service import reconcile as reconcile_module
+from backend.app.protokflow.service import design_system_service as service_module
+from backend.app.protokflow.storage import design_source as design_source_module
 from backend.app.protokflow.service.design_system_service import design_system_service
 from backend.database import db
 
@@ -64,7 +65,7 @@ async def _index_default(tmp_path: Path) -> None:
 async def test_query_returns_updated_tokens_after_external_content_change(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
-    """AE8: an external edit is absorbed by the next query entry point."""
+    """An external edit is absorbed by the next query entry point."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
@@ -96,7 +97,7 @@ async def test_unchanged_file_query_skips_digest_read(
     def fail_read(*args: object, **kwargs: object) -> object:
         raise AssertionError("an unchanged source must not be read for hashing")
 
-    monkeypatch.setattr(reconcile_module, "read_source_bytes", fail_read)
+    monkeypatch.setattr(design_source_module, "read_source_bytes", fail_read)
 
     detail = await design_system_service.get(repo_root=tmp_path, slug="default")
 
@@ -124,7 +125,7 @@ async def test_touch_only_change_refreshes_metadata_without_reparse(
     def fail_parse(*args: object, **kwargs: object) -> object:
         raise AssertionError("a touch-only change must not re-enter the parser")
 
-    monkeypatch.setattr(reconcile_module, "parse_design_content", fail_parse)
+    monkeypatch.setattr(design_source_module, "parse_design_content", fail_parse)
 
     bumped_ns = before.source_mtime_ns + 1_000_000_000
     os.utime(design_md_path, ns=(bumped_ns, bumped_ns))
@@ -214,7 +215,7 @@ async def test_mtime_preserving_change_is_boundary_and_index_all_recovers(
 async def test_query_after_source_deletion_returns_stale_db_state(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
-    """A missing source keeps the DB row and reports a derived stale flag (KTD11)."""
+    """A missing source keeps the DB row and reports a derived stale flag."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     await _index_default(tmp_path)
@@ -380,6 +381,44 @@ async def test_rejected_reindex_keeps_previous_db_state(
     assert (await _token_rows(after.id))["colors.primary"] == "#111111"
 
 
+async def test_row_deleted_during_reconciliation_is_not_revived(
+    tmp_path: Path,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed-source sync rechecks its row inside the service transaction."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    await _index_default(tmp_path)
+    system_id = (await _system_by_slug("default")).id
+    design_md_path.write_text(
+        _DESIGN_MD.replace("#111111", "#999999"), encoding="utf-8"
+    )
+
+    real_to_thread = asyncio.to_thread
+    deleted = False
+
+    async def observe_then_delete(
+        func: object, /, *args: object, **kwargs: object
+    ) -> object:
+        nonlocal deleted
+        result = await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
+        if func is service_module.observe_design_source and not deleted:
+            deleted = True
+            async with db.async_db_session.begin() as session:
+                await design_system_dao.delete_model_by_column(session, slug="default")
+        return result
+
+    monkeypatch.setattr(service_module.asyncio, "to_thread", observe_then_delete)
+
+    with pytest.raises(UnknownDesignSystemError, match="deleted while.*reconciled"):
+        await design_system_service.get(repo_root=tmp_path, slug="default")
+
+    async with db.async_db_session() as session:
+        assert await design_system_dao.get_by_slug(session, "default") is None
+        assert list(await design_token_dao.get_all(session, system_id)) == []
+
+
 async def test_reindex_replaces_token_set_without_leftovers(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
@@ -405,7 +444,7 @@ async def test_reindex_replaces_token_set_without_leftovers(
 async def test_index_all_deletes_orphaned_file_backed_rows(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
-    """KTD11: rows for files gone from the discovery set are hard-deleted."""
+    """Rows for files gone from the discovery set are hard-deleted."""
     del test_db
     (tmp_path / "DESIGN.md").write_text(_DESIGN_MD, encoding="utf-8")
     design_dir = tmp_path / "design"
@@ -447,7 +486,7 @@ async def test_index_all_with_empty_discovery_still_deletes_file_backed_rows(
 async def test_index_all_preserves_db_only_rows(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
-    """DB-only rows (source_path NULL) survive batch reindexing (KTD11)."""
+    """DB-only rows (source_path NULL) survive batch reindexing."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     await _index_default(tmp_path)
@@ -491,7 +530,7 @@ async def test_file_ahead_state_is_absorbed_by_next_query(
     test_db: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """KTD9 recovery: after a failed DB commit, the next query re-indexes the file."""
+    """After a failed DB commit, the next query re-indexes the file."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     await _index_default(tmp_path)

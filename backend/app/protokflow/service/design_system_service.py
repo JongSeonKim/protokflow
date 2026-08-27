@@ -1,4 +1,4 @@
-"""Index DESIGN.md files into design-system storage and patch tokens back to source."""
+"""Index DESIGN.md files into storage and write token patches back to source."""
 
 from __future__ import annotations
 
@@ -24,13 +24,18 @@ from backend.app.protokflow.core.discovery import (
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem, DesignToken
-from backend.app.protokflow.service.reconcile import (
-    ParsedDesignFile,
+from backend.app.protokflow.storage.design_source import (
+    DesignSourceSnapshot,
+    SourceChange,
+    SourceMetadata,
+    observe_design_source,
     parse_design_file,
     read_design_file,
     read_source_bytes,
-    reconcile_design_system,
-    upsert_parsed_file,
+)
+from backend.app.protokflow.storage.design_system_store import (
+    refresh_source_metadata,
+    sync_source_snapshot,
 )
 from backend.app.protokflow.error.storage import (
     ConcurrentModificationError,
@@ -53,13 +58,26 @@ class DesignSystemDetail:
     stale: bool
 
 
-async def _persist_token_patch(written: ParsedDesignFile) -> DesignSystem:
-    """Persist one patched file without reviving a row deleted mid-patch.
+@dataclass(frozen=True, slots=True)
+class ReconciledSystem:
+    """Result of reconciling a persisted system against its source file.
 
-    The slug's row is re-checked inside the write transaction: the file has
-    already been patched by then, and re-creating a deleted row would silently
-    undo a deletion. The patched file stays ahead of the database (KTD9) and
-    the next index run re-imports it if the file is still present.
+    ``missing`` indicates the source file was absent; callers decide whether
+    that means a stale query result or a rejected patch.
+    """
+
+    system: DesignSystem
+    missing: bool = False
+    snapshot: DesignSourceSnapshot | None = None
+
+
+async def _persist_token_patch(written: DesignSourceSnapshot) -> DesignSystem:
+    """Persist a patched file, rejecting revival of a row deleted mid-patch.
+
+    The row is rechecked inside the write transaction. If the system was
+    deleted while the file was being patched, the error surfaces instead of
+    recreating the row. The patched file remains on disk and is re-imported
+    on the next index run.
     """
     async with db.async_db_session.begin() as session:
         existing = await design_system_dao.get_by_slug(session, written.slug)
@@ -69,7 +87,7 @@ async def _persist_token_patch(written: ParsedDesignFile) -> DesignSystem:
                 f"file was being patched; the patched file stays ahead and the "
                 f"next index run will re-import it"
             )
-        return await upsert_parsed_file(session, written, existing=existing)
+        return await sync_source_snapshot(session, written, existing=existing)
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -97,22 +115,20 @@ def _atomic_write_bytes(
 
     The replacement is written beside the target and swapped in via rename
     to ensure atomic updates. File data and parent directory entries are synced
-    to disk around the rename operation.
+    to disk around the rename.
 
-    When expected_digest is provided, the original is re-read just before the
-    temporary file is created and compared against it (CAS): a mismatch means
-    a writer landed in the window between the entry pre-check and this write,
-    so ConcurrentModificationError is raised and nothing is replaced. The
-    remaining verify-to-replace window cannot be eliminated on POSIX; the
-    contract is to keep it minimal and fail safely on mismatch.
+    When ``expected_digest`` is provided, the original is re-read just before
+    the temporary file is created and compared against it (compare-and-swap).
+    A mismatch raises :class:`ConcurrentModificationError` without replacing
+    the file. The residual verify-to-replace window is inherent to POSIX and
+    kept minimal.
 
-    Symlinks and hard links are rejected before writing to prevent breaking link
-    targets during directory entry replacement. Disk failures raise
-    SourceWriteError with the original OSError as __cause__ so callers only
-    need to handle the storage-layer exception hierarchy.
+    Symlinks and hard links are rejected to avoid corrupting link targets.
+    Disk failures raise :class:`SourceWriteError` with the original
+    :class:`OSError` as ``__cause__``.
 
-    Returns the stat result from the temporary file descriptor before replacement,
-    capturing the exact metadata of the written bytes.
+    Returns the stat result from the temporary file descriptor before
+    replacement.
     """
     try:
         stat_result = os.lstat(path)
@@ -207,15 +223,12 @@ def _patch_and_write(
     current: ParsedDesignSystem,
     token_patches: Mapping[str, str],
     entry_digest: str,
-) -> ParsedDesignFile:
-    """Serialize, write, and describe a patched document off the event loop.
+) -> DesignSourceSnapshot:
+    """Serialize and atomically write a patched document in a worker thread.
 
-    Serialization is the most expensive step in a token patch, so it shares the
-    worker thread with the file write instead of blocking the loop that serves
-    the preview. entry_digest is the CAS baseline observed at entry — the
-    reconciliation snapshot's digest, or the digest of the post-entry read;
-    a writer landing before the swap raises
-    ConcurrentModificationError instead of clobbering its change.
+    ``entry_digest`` is the CAS baseline from the entry-point observation.
+    A concurrent modification between the CAS check and the atomic rename
+    triggers :class:`ConcurrentModificationError`.
     """
     source_path = repo_root / source_path_value
     patched_text = serialize_design_md(
@@ -228,7 +241,7 @@ def _patch_and_write(
     patched_bytes = patched_text.encode("utf-8")
     digest = hashlib.sha256(patched_bytes).hexdigest()
     stat = _atomic_write_bytes(source_path, patched_bytes, expected_digest=entry_digest)
-    return ParsedDesignFile(
+    return DesignSourceSnapshot(
         slug=slug,
         source_root=repo_root.as_posix(),
         source_path=source_path_value,
@@ -260,14 +273,63 @@ class DesignSystemService:
             if await design_system_dao.get_by_slug(session, slug) is None:
                 raise UnknownDesignSystemError(f"design system not found: {slug}")
 
+    async def _reconcile_source(
+        self, root: Path, system: DesignSystem
+    ) -> ReconciledSystem:
+        """Reconcile a persisted system against its source file.
+
+        Delegates filesystem observation to the storage adapter and manages
+        session lifetime and row rechecks here. A row deleted during
+        reconciliation surfaces as an error instead of being recreated.
+        """
+        if system.source_path is None:
+            return ReconciledSystem(system=system)
+
+        observation = await asyncio.to_thread(
+            observe_design_source,
+            root,
+            slug=system.slug,
+            source_path=system.source_path,
+            previous=SourceMetadata(
+                source_digest=system.source_digest,
+                source_mtime_ns=system.source_mtime_ns,
+                source_size=system.source_size,
+            ),
+        )
+        if observation.change is SourceChange.MISSING:
+            return ReconciledSystem(system=system, missing=True)
+        if observation.change is SourceChange.UNCHANGED:
+            return ReconciledSystem(system=system)
+        if observation.change is SourceChange.TOUCHED:
+            if observation.metadata is None:  # pragma: no cover - adapter invariant
+                raise RuntimeError("touch observation missing source metadata")
+            async with db.async_db_session.begin() as session:
+                refreshed = await refresh_source_metadata(
+                    session, system.slug, observation.metadata
+                )
+            return ReconciledSystem(system=refreshed)
+
+        if observation.snapshot is None:  # pragma: no cover - adapter invariant
+            raise RuntimeError("changed observation missing source snapshot")
+        async with db.async_db_session.begin() as session:
+            existing = await design_system_dao.get_by_slug(session, system.slug)
+            if existing is None:
+                raise UnknownDesignSystemError(
+                    f"design system '{system.slug}' was deleted while its source "
+                    f"was being reconciled"
+                )
+            refreshed = await sync_source_snapshot(
+                session, observation.snapshot, existing=existing
+            )
+        return ReconciledSystem(system=refreshed, snapshot=observation.snapshot)
+
     async def index_all(self, *, repo_root: Path) -> list[DesignSystem]:
         """
-        Index every DESIGN.md file discovered in a repository
+        Index every DESIGN.md file discovered in a repository.
 
         File-backed rows bound to this repository root that are absent from
-        the discovery set are hard-deleted in the same transaction as the
-        upserts (KTD11); an empty discovery set still deletes orphans, because
-        it is the every-file-deleted path.
+        the discovery set are hard-deleted in the same transaction. An empty
+        discovery set still triggers orphan deletion.
 
         :param repo_root: Repository root path
         :return:
@@ -281,7 +343,7 @@ class DesignSystemService:
 
             async with db.async_db_session.begin() as session:
                 systems = [
-                    await upsert_parsed_file(session, parsed_file)
+                    await sync_source_snapshot(session, parsed_file)
                     for parsed_file in parsed_files
                 ]
                 await design_system_dao.delete_orphan_sources(
@@ -293,13 +355,12 @@ class DesignSystemService:
 
     async def get(self, *, repo_root: Path, slug: str) -> DesignSystemDetail:
         """
-        Query one design system with its tokens after reconciling its source
+        Query one design system with its tokens after reconciling its source.
 
-        The (mtime_ns, size) pre-check runs first (KTD6): external changes are
-        absorbed by re-indexing, a touched-but-identical file refreshes
-        metadata only, and a missing file keeps the persisted row and reports
-        stale=True as a query-time verdict — no staleness column is stored
-        (KTD11).
+        A ``(mtime_ns, size)`` pre-check detects external changes. A
+        touched-but-identical file refreshes metadata only. A missing file
+        keeps the persisted row and returns ``stale=True`` — no staleness
+        column is persisted.
 
         :param repo_root: Repository root path
         :param slug: Design system slug
@@ -320,9 +381,7 @@ class DesignSystemService:
                     f"'{system.source_root}' but the query targets "
                     f"'{root.as_posix()}'; re-index against this root to rebind it"
                 )
-            reconciled = await reconcile_design_system(
-                root=root, system=system, for_patch=False
-            )
+            reconciled = await self._reconcile_source(root, system)
             async with db.async_db_session() as session:
                 if await design_system_dao.get_by_slug(session, slug) is None:
                     raise UnknownDesignSystemError(
@@ -334,7 +393,7 @@ class DesignSystemService:
             return DesignSystemDetail(
                 system=reconciled.system,
                 tokens=tokens,
-                stale=reconciled.stale,
+                stale=reconciled.missing,
             )
 
     async def apply_token_patch(
@@ -345,22 +404,17 @@ class DesignSystemService:
         token_patches: Mapping[str, str],
     ) -> DesignSystem:
         """
-        Patch token values in a DESIGN.md file and write the change through to storage
+        Patch token values in a DESIGN.md file and write the change through to storage.
 
-        Every entry passes the reconciliation pre-check first (KTD6), so an
-        external change that landed before the call — including a file left
-        ahead by a failed database commit (KTD9) — is absorbed and the patch
-        applies on top of the reconciled latest content. The concurrent-modification
-        error is reserved for a real race: a writer landing after the entry
-        pre-check but before the atomic write is caught by the CAS re-read and
-        the swap never happens. A missing source file rejects the patch with
-        MissingSourceFileError because a patch must always write the file.
+        Reconciliation runs before the patch, absorbing external changes
+        detected since the last entry point. The file is written first and
+        the database committed afterward; a failed commit leaves the file
+        ahead of the database, and the next reconciliation absorbs the
+        difference. A concurrent modification between the CAS check and the
+        atomic rename raises :class:`ConcurrentModificationError`.
 
-        The file is the recovery source of truth, so the on-disk document is
-        patched in-place first and the database is committed afterwards; a
-        database failure leaves the file ahead for change detection to re-index.
-        The resolved repo_root must match the root recorded at index time;
-        otherwise the patch is rejected with SourceRootMismatchError.
+        A missing source file raises :class:`MissingSourceFileError`.
+        A mismatched repository root raises :class:`SourceRootMismatchError`.
 
         :param repo_root: Repository root path
         :param slug: Design system slug
@@ -387,26 +441,24 @@ class DesignSystemService:
                 )
             source_path_value = system.source_path
 
-            reconciled = await reconcile_design_system(
-                root=root, system=system, for_patch=True
-            )
+            reconciled = await self._reconcile_source(root, system)
+            if reconciled.missing:
+                raise MissingSourceFileError(
+                    f"source file for design system '{slug}' is missing: "
+                    f"{root / source_path_value}"
+                )
             if not token_patches:
-                # An empty patch changes nothing, so it must not rewrite the
-                # file or bump its mtime; return the reconciled state unchanged.
+                # Empty patch: no file rewrite or mtime change.
                 return reconciled.system
 
             snapshot = reconciled.snapshot
             if snapshot is None:
-                # The stat pre-check matched, so the stored digest already
-                # describes the current bytes; read once for the parse the
-                # patch itself needs.
+                # Stat matched: read once for the parse the patch needs.
                 source = DiscoveredDesignFile(slug=slug, path=root / source_path_value)
                 content, _, current = await asyncio.to_thread(read_design_file, source)
                 entry_digest = hashlib.sha256(content).hexdigest()
             else:
-                # Reconciliation just read and parsed the changed source, so
-                # its snapshot is both the patch baseline and the CAS digest;
-                # the file is not read again here.
+                # Snapshot from reconciliation serves as both patch baseline and CAS digest.
                 current = snapshot.parsed
                 entry_digest = snapshot.source_digest
 

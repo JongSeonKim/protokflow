@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ruamel.yaml import YAML
@@ -380,3 +380,29 @@ def serialize_design_md(
         output = f"{FENCE}{eol}{dumped}{closing_fence}{guide_markdown}"
     _reject_mixed_line_endings(output)
     return output
+
+
+def derive_patched_parse(
+    current: ParsedDesignSystem,
+    patched_text: str,
+    token_patches: Mapping[str, str],
+) -> ParsedDesignSystem:
+    """Derive the parsed form of a patched document without re-parsing it.
+
+    A token path always resolves inside a foundation or component group, while
+    the title, description, and spec version come from the modeled scalars
+    and the extras from every other key. A value patch therefore cannot reach
+    any field except the raw front matter text and the patched token values, so
+    re-running the YAML parser over the emitted bytes would only reproduce what
+    the caller already holds.
+    """
+    return replace(
+        current,
+        front_matter_raw=split_front_matter(patched_text).front_matter_raw,
+        tokens=[
+            replace(token, value=token_patches[token.token_path])
+            if token.token_path in token_patches
+            else token
+            for token in current.tokens
+        ],
+    )

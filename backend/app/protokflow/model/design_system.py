@@ -81,3 +81,6 @@ class DesignSystem(Base):
     synced_at: Mapped[datetime | None] = mapped_column(
         Timestamp(), default=None, comment="Last file sync time"
     )
+    unbound_at: Mapped[datetime | None] = mapped_column(
+        Timestamp(), default=None, comment="Timestamp when file source was unlinked"
+    )

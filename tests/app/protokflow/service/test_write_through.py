@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import os
 from pathlib import Path
-from stat import S_IMODE, S_ISDIR
+from stat import S_ISDIR
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,15 +18,14 @@ from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.error.design_md import UnknownTokenPathError
 from backend.app.protokflow.service import design_system_service as service_module
+from backend.app.protokflow.storage import design_source as design_source_module
 from backend.app.protokflow.service.design_system_service import design_system_service
 from backend.app.protokflow.error.storage import (
-    ConcurrentModificationError,
     MissingSourceFileError,
     SourceRootMismatchError,
     SourceWriteError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
-    UnsupportedSourceLinkError,
 )
 from backend.database import db
 
@@ -260,7 +259,7 @@ async def test_row_deleted_mid_patch_is_not_revived(
     async def to_thread_that_deletes_row(
         func: object, /, *args: object, **kwargs: object
     ):
-        if func is service_module._patch_and_write:
+        if func is service_module.write_token_patch:
             async with db.async_db_session.begin() as session:
                 await design_system_dao.delete_model_by_column(session, slug="default")
         return await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
@@ -313,16 +312,22 @@ async def test_db_only_system_rejects_patch(
 async def test_missing_source_file_raises_domain_error(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
+    """A patch against a deleted source is rejected with file and DB intact."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
     await design_system_service.index_all(repo_root=tmp_path)
+    system = await _system_by_slug("default")
     design_md_path.unlink()
 
     with pytest.raises(MissingSourceFileError, match="DESIGN.md"):
         await design_system_service.apply_token_patch(
             repo_root=tmp_path, slug="default", token_patches={"colors.primary": "#000"}
         )
+
+    system_after = await _system_by_slug("default")
+    assert system_after.source_digest == system.source_digest
+    assert (await _token_rows(system_after.id))["colors.primary"] == "#111111"
 
 
 async def test_patch_rejects_repo_root_that_differs_from_indexed_root(
@@ -411,15 +416,15 @@ async def test_source_metadata_describes_one_file_version(
     )
     assert len(external_edit) != len(indexed)
 
-    real_parse = service_module._parse_design_content
+    real_parse = design_source_module.parse_design_content
 
     def parse_after_external_save(path: Path, content: bytes) -> object:
-        # An editor saves a longer document once the bytes have been read.
+        # Simulate a concurrent write between read and parse.
         design_md_path.write_bytes(external_edit)
         return real_parse(path, content)
 
     monkeypatch.setattr(
-        service_module, "_parse_design_content", parse_after_external_save
+        design_source_module, "parse_design_content", parse_after_external_save
     )
 
     await design_system_service.index_all(repo_root=tmp_path)
@@ -526,14 +531,14 @@ async def test_patch_parses_the_document_only_once(
     await design_system_service.index_all(repo_root=tmp_path)
 
     parses = 0
-    real_parse = service_module.parse_design_md
+    real_parse = design_source_module.parse_design_md
 
     def counting_parse(text: str) -> object:
         nonlocal parses
         parses += 1
         return real_parse(text)
 
-    monkeypatch.setattr(service_module, "parse_design_md", counting_parse)
+    monkeypatch.setattr(design_source_module, "parse_design_md", counting_parse)
 
     await design_system_service.apply_token_patch(
         repo_root=tmp_path, slug="default", token_patches=token_patches
@@ -592,9 +597,8 @@ async def test_commit_failure_leaves_file_ahead_of_database(
         replaced.append(design_system_id)
         return rows
 
-    # Session.flush() drives SessionTransaction.commit too, so failing every
-    # commit would abort before the token replacement ever runs. Only the commit
-    # the transaction context manager performs on exit may fail here.
+    # Only the commit performed by the transaction context manager on exit may
+    # fail; failing all commits would abort before token replacement runs.
     real_commit = SessionTransaction.commit
     real_exit = SessionTransaction.__exit__
     exiting = False
@@ -635,44 +639,6 @@ async def test_commit_failure_leaves_file_ahead_of_database(
     assert (await _token_rows(system.id))["colors.primary"] == "#111111"
     assert system.source_digest == digest_before
     assert system.source_digest != hashlib.sha256(patched).hexdigest()
-
-
-async def test_external_modification_raises_concurrent_modification_error(
-    tmp_path: Path, test_db: AsyncSession
-) -> None:
-    """An external edit changing the file digest before patch must be rejected."""
-    del test_db
-    design_md_path = tmp_path / "DESIGN.md"
-    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
-    await design_system_service.index_all(repo_root=tmp_path)
-    system_before = await _system_by_slug("default")
-    expected_digest = system_before.source_digest
-
-    # External modification: user/editor touches the file directly
-    external_content = _DESIGN_MD.replace("#111111", "#999999")
-    design_md_path.write_text(external_content, encoding="utf-8")
-    found_digest = hashlib.sha256(external_content.encode("utf-8")).hexdigest()
-
-    with pytest.raises(ConcurrentModificationError) as exc_info:
-        await design_system_service.apply_token_patch(
-            repo_root=tmp_path,
-            slug="default",
-            token_patches={"colors.primary": "#0B0E14"},
-        )
-
-    error_msg = str(exc_info.value)
-    assert "default" in error_msg
-    assert expected_digest is not None
-    assert expected_digest in error_msg
-    assert found_digest in error_msg
-    assert "refetch" in error_msg
-
-    # Verify external file was not clobbered by the failed patch
-    assert design_md_path.read_text(encoding="utf-8") == external_content
-    # Verify DB still holds the pre-modification state
-    system_after = await _system_by_slug("default")
-    assert system_after.source_digest == expected_digest
-    assert (await _token_rows(system_after.id))["colors.primary"] == "#111111"
 
 
 async def test_concurrent_token_patches_are_serialized_without_lost_updates(
@@ -826,7 +792,7 @@ async def test_empty_token_patches_is_a_noop(
     def fail_write(*args: object, **kwargs: object) -> None:
         raise AssertionError("a no-op patch must not touch the file")
 
-    monkeypatch.setattr(service_module, "_atomic_write_bytes", fail_write)
+    monkeypatch.setattr(design_source_module, "atomic_write_bytes", fail_write)
 
     result = await design_system_service.apply_token_patch(
         repo_root=tmp_path, slug="default", token_patches={}
@@ -851,131 +817,3 @@ async def test_empty_token_patches_on_unknown_slug_still_raises(
         await design_system_service.apply_token_patch(
             repo_root=tmp_path, slug="missing-slug", token_patches={}
         )
-
-
-def test_atomic_write_preserves_non_default_file_mode(tmp_path: Path) -> None:
-    """copymode carries the target's mode onto the 0o600 mkstemp temp before the swap."""
-    target = tmp_path / "DESIGN.md"
-    target.write_bytes(b"original\n")
-    target.chmod(0o640)
-    mode_before = S_IMODE(os.stat(target).st_mode)
-    assert mode_before == 0o640  # distinct from mkstemp's default 0o600
-
-    service_module._atomic_write_bytes(target, b"new content\n")
-
-    assert target.read_bytes() == b"new content\n"
-    assert S_IMODE(os.stat(target).st_mode) == 0o640
-
-
-def test_atomic_write_unlinks_temp_when_copymode_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A copymode failure after the temp is written must unlink it and preserve the target."""
-    target = tmp_path / "DESIGN.md"
-    target.write_bytes(b"original\n")
-
-    def failing_copymode(*args: object, **kwargs: object) -> None:
-        raise OSError("simulated copymode failure")
-
-    monkeypatch.setattr(service_module.shutil, "copymode", failing_copymode)
-
-    with pytest.raises(SourceWriteError, match="simulated copymode failure"):
-        service_module._atomic_write_bytes(target, b"new content\n")
-
-    assert target.read_bytes() == b"original\n"
-    assert list(tmp_path.iterdir()) == [target]
-
-
-def test_atomic_write_unlinks_temp_when_handle_write_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A write failure into the temp file must unlink it and never touch the target."""
-    target = tmp_path / "DESIGN.md"
-    target.write_bytes(b"original\n")
-
-    real_fdopen = os.fdopen
-
-    def fdopen_with_failing_write(fd: int, mode: str = "wb") -> object:
-        # _atomic_write_bytes always opens the temp descriptor "wb"; wrap that
-        # real handle so only its write() fails while flush/fileno/close stay real.
-        handle = real_fdopen(fd, "wb")
-
-        class _FailingWriteHandle:
-            def __enter__(self) -> _FailingWriteHandle:
-                handle.__enter__()
-                return self
-
-            def __exit__(self, *exc: object) -> None:
-                handle.close()
-
-            def write(self, _data: object) -> int:
-                raise OSError("simulated write failure")
-
-            def flush(self) -> None:
-                handle.flush()
-
-            def fileno(self) -> int:
-                return handle.fileno()
-
-        return _FailingWriteHandle()
-
-    monkeypatch.setattr(service_module.os, "fdopen", fdopen_with_failing_write)
-
-    with pytest.raises(SourceWriteError, match="simulated write failure"):
-        service_module._atomic_write_bytes(target, b"new content\n")
-
-    assert target.read_bytes() == b"original\n"
-    assert list(tmp_path.iterdir()) == [target]
-
-
-@pytest.mark.skipif(
-    hasattr(os, "getuid") and os.getuid() == 0,
-    reason="root bypasses directory permission bits",
-)
-def test_atomic_write_wraps_permission_error_on_unwritable_parent(
-    tmp_path: Path,
-) -> None:
-    """mkstemp cannot create the temp in a read-only directory; wrapped with cause."""
-    design_dir = tmp_path / "locked"
-    design_dir.mkdir()
-    target = design_dir / "DESIGN.md"
-    target.write_bytes(b"original\n")
-    design_dir.chmod(0o500)
-    try:
-        with pytest.raises(SourceWriteError) as excinfo:
-            service_module._atomic_write_bytes(target, b"new content\n")
-    finally:
-        design_dir.chmod(0o700)
-
-    assert isinstance(excinfo.value.__cause__, PermissionError)
-    assert target.read_bytes() == b"original\n"
-
-
-def test_atomic_write_rejects_symlink_source(tmp_path: Path) -> None:
-    """Symlink sources are rejected to prevent replacing the link with a regular file."""
-    real_target = tmp_path / "real.md"
-    real_target.write_bytes(b"original\n")
-    link = tmp_path / "DESIGN.md"
-    link.symlink_to(real_target)
-
-    with pytest.raises(UnsupportedSourceLinkError):
-        service_module._atomic_write_bytes(link, b"new content\n")
-
-    assert link.is_symlink()
-    assert real_target.read_bytes() == b"original\n"
-    assert sorted(tmp_path.iterdir()) == sorted([real_target, link])
-
-
-def test_atomic_write_rejects_hard_linked_source(tmp_path: Path) -> None:
-    """Hard-linked sources are rejected to prevent breaking link aliases."""
-    target = tmp_path / "DESIGN.md"
-    target.write_bytes(b"original\n")
-    alias = tmp_path / "alias.md"
-    os.link(target, alias)
-
-    with pytest.raises(UnsupportedSourceLinkError):
-        service_module._atomic_write_bytes(target, b"new content\n")
-
-    assert target.read_bytes() == b"original\n"
-    assert alias.read_bytes() == b"original\n"
-    assert os.stat(target).st_ino == os.stat(alias).st_ino

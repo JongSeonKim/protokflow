@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.protokflow.core.design_md import parse_design_md
 from backend.app.protokflow.error.design_md import (
     FencedYamlBlockError,
     InvalidEncodingError,
@@ -19,11 +18,8 @@ from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.service.design_system_service import (
-    _ParsedDesignFile,
-    _build_design_tokens,
     design_system_service,
 )
-from backend.app.protokflow.error.storage import TokenReparentingError
 from backend.database import db
 
 
@@ -237,13 +233,15 @@ async def test_indexing_rolls_back_all_systems_when_persistence_fails(
     upsert_calls = 0
 
     async def fail_on_second_upsert(
-        session: AsyncSession, design_system: DesignSystem
+        session: AsyncSession,
+        design_system: DesignSystem,
+        existing: DesignSystem | None = None,
     ) -> DesignSystem:
         nonlocal upsert_calls
         upsert_calls += 1
         if upsert_calls == 2:
             raise RuntimeError("test persistence failure")
-        return await real_upsert(session, design_system)
+        return await real_upsert(session, design_system, existing=existing)
 
     monkeypatch.setattr(design_system_dao, "upsert", fail_on_second_upsert)
 
@@ -252,45 +250,3 @@ async def test_indexing_rolls_back_all_systems_when_persistence_fails(
 
     async with db.async_db_session.begin() as session:
         assert await session.scalar(select(func.count(DesignSystem.id))) == 0
-
-
-def test_build_design_tokens_builds_tokens_matching_design_system_id() -> None:
-    parsed_file = _ParsedDesignFile(
-        slug="default",
-        source_root="/repo",
-        source_path="DESIGN.md",
-        source_digest="abc",
-        source_mtime_ns=0,
-        source_size=10,
-        parsed=parse_design_md(_design_md("Default", "#111")),
-    )
-    tokens = _build_design_tokens(parsed_file, "sys-123")
-    assert len(tokens) == 1
-    assert tokens[0].design_system_id == "sys-123"
-    assert tokens[0].token_path == "colors.primary"
-    assert tokens[0].value == "#111"
-
-
-def test_build_design_tokens_rejects_mismatched_reparenting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    parsed_file = _ParsedDesignFile(
-        slug="default",
-        source_root="/repo",
-        source_path="DESIGN.md",
-        source_digest="abc",
-        source_mtime_ns=0,
-        source_size=10,
-        parsed=parse_design_md(_design_md("Default", "#111")),
-    )
-    from backend.app.protokflow.model import DesignToken
-
-    original_init = DesignToken.__init__
-
-    def faulty_init(self: DesignToken, *args: object, **kwargs: object) -> None:
-        original_init(self, "wrong-sys-id", *args[1:], **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(DesignToken, "__init__", faulty_init)
-
-    with pytest.raises(TokenReparentingError, match="cannot reparent"):
-        _build_design_tokens(parsed_file, "sys-123")

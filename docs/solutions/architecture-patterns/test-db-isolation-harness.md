@@ -11,7 +11,7 @@ applies_when:
   - "Tests using SQLite lifecycle DDL alongside session factories"
   - "Ensuring test suites never access or mutate the repository production database"
 related_components: [database, development_workflow]
-tags: [pytest, xdist, sqlite, test-isolation, database-harness, engine-injection, meta-testing, parallel-tests]
+tags: [pytest, xdist, sqlite, test-isolation, database-harness, engine-injection, meta-testing, parallel-tests, encoding, cross-platform]
 ---
 
 # Test Database Isolation Harness Architecture
@@ -61,6 +61,8 @@ The integrity of the test harness is enforced through automated meta-tests:
 - Asserts controller and worker database URL resolution and import-time binding invariants.
 - Verifies that the production database file path (`.protokflow/protokflow.db`) modification time (`mtime`) is strictly preserved across the test run.
 - Uses AST analysis to scan all non-meta test modules, failing if any test directly calls private hooks (`_set_engine_for_testing`, `_set_factory_for_testing`) or defines local `test_db`/`test_engine` fixtures.
+- Reads every scanned module with an explicit `encoding="utf-8"`. The guard parses test sources itself, so it inherits their encoding problem: relying on the platform default made `read_text()` raise `UnicodeDecodeError` on any machine whose locale codepage is not UTF-8, and because that happens *before* any check runs, the harness's own enforcement silently failed open on those machines. A guard that can crash before asserting protects nothing — the encoding is part of the guarantee, not an implementation detail.
+- Every test directory carries an `__init__.py`. `pytest`'s prepend import mode relies on regular packages to keep same-named test modules in different directories from colliding, and the AST guard walks `TESTS_DIR.rglob("*.py")` across all of them.
 
 ## Why This Matters
 
@@ -77,20 +79,24 @@ Unlike connection-level rollback mocks or in-memory SQLite instances (which fail
 
 - **Parallel Test Suites**: Apply whenever executing SQLAlchemy async SQLite test suites under `pytest-xdist`.
 - **Writing Tests**: All tests requiring database interaction must declare and consume the shared `test_db` fixture. Tests must never instantiate custom engines or invoke private testing hooks directly.
+- **Adding a Test Directory**: Create its `__init__.py` in the same change, or same-named modules across directories can collide under prepend import mode.
+- **Reading or Writing Files in Tests**: Pass `encoding` explicitly. The platform default varies by locale, and byte-exact fixtures additionally need `write_bytes`/`newline=""` rather than `write_text`, whose `newline=None` rewrites LF to CRLF on Windows. `.gitattributes` pins `*.py` and `*.md` to LF so committed sources survive checkout unmangled.
 - **Tooling Test Isolation**: Tests requiring external CLI binaries or slow external dependencies must be tagged with `@pytest.mark.tooling`, excluding them from default runs via `-m 'not tooling'`.
 
 ## Examples
 
 ### Consuming the `test_db` Fixture
+`pyproject.toml` sets `asyncio_mode = "auto"`, so async tests need no
+`@pytest.mark.asyncio` decorator — declaring the `test_db` fixture is the whole
+contract.
+
 ```python
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.model import DesignSystem
 from backend.database.db import async_db_session
 
 
-@pytest.mark.asyncio
 async def test_design_system_persistence(test_db: AsyncSession) -> None:
     # Direct session usage
     system = DesignSystem(slug="default", title="Default System")

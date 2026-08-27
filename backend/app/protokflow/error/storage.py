@@ -19,6 +19,16 @@ class MissingSourceFileError(StorageLayerError):
     """Raised when a design system's linked DESIGN.md file no longer exists."""
 
 
+class SourceRootNotFoundError(StorageLayerError):
+    """Raised when an indexing run targets a path that is not an existing directory.
+
+    Discovery over a missing root returns an empty set, which is
+    indistinguishable from a repository whose DESIGN.md files were all
+    deleted. Rejecting the root keeps a typo or an unmounted volume from
+    unbinding every file-backed row of that root.
+    """
+
+
 class TokenReparentingError(StorageLayerError):
     """Raised when token replacement would silently reparent tokens across systems."""
 

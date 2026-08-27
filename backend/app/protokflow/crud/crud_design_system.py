@@ -77,7 +77,7 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
 
         return existing
 
-    async def delete_orphan_sources(
+    async def unbind_orphan_sources(
         self,
         db: AsyncSession,
         *,
@@ -85,22 +85,44 @@ class CRUDDesignSystem(CRUDPlus[DesignSystem]):
         keep_slugs: Sequence[str],
     ) -> int:
         """
-        Hard-delete file-backed rows of one repository root missing from discovery
+        Clear the source binding of rows of one root missing from discovery
 
-        Tokens are removed by the design_tokens foreign key (ON DELETE CASCADE);
-        DB-only rows (source_path NULL) and rows bound to other roots are kept.
-        An empty keep_slugs set deletes every file-backed row of the root —
-        the every-file-deleted path.
+        Only the source_* binding columns and synced_at are cleared, so an
+        orphaned row survives as a DB-only row and a later index run rebinds
+        it by slug with its id, tokens and provenance intact.
+
+        Deleting instead would reach far past the file binding it means to
+        drop: design_systems.id is referenced by prototype_runs
+        (ON DELETE CASCADE, chaining on to candidates, exports, slot_contents
+        and token_patches) and by design_systems.derived_from_id
+        (ON DELETE SET NULL, silently stripping provenance from derived
+        forks). Because token ids are re-issued on every sync, a delete is
+        also unrecoverable by re-indexing.
+
+        DB-only rows (source_path NULL) and rows bound to other roots are
+        untouched. An empty keep_slugs set unbinds every file-backed row of
+        the root — the every-file-deleted path.
 
         :param db: Database session
         :param source_root: Repository root the discovery set belongs to
         :param keep_slugs: Slugs discovered in the current run
-        :return: Number of deleted design-system rows
+        :return: Number of unbound design-system rows
         """
-        statement = sa.delete(DesignSystem).where(
-            DesignSystem.source_path.is_not(None),
-            DesignSystem.source_root == source_root,
-            DesignSystem.slug.not_in(keep_slugs),
+        statement = (
+            sa.update(DesignSystem)
+            .where(
+                DesignSystem.source_path.is_not(None),
+                DesignSystem.source_root == source_root,
+                DesignSystem.slug.not_in(keep_slugs),
+            )
+            .values(
+                source_path=None,
+                source_root=None,
+                source_digest=None,
+                source_mtime_ns=None,
+                source_size=None,
+                synced_at=None,
+            )
         )
         result = cast(CursorResult[Any], await db.execute(statement))
         return result.rowcount

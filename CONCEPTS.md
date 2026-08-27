@@ -34,4 +34,16 @@ The process by which a storage entry point catches the database up to an externa
 The failure state after a successful file write whose database commit failed: the file is ahead of the database, and the next entry point's precheck absorbs the change by re-indexing rather than treating it as a concurrent modification.
 
 ### Stale
-A read-time derived status for a design system whose source file is absent: the row is retained because a branch switch may make the file reappear, and staleness is computed at query time instead of being stored in a column.
+A read-time derived status for a design system whose source file is absent: the record is retained because a branch switch may make the file reappear, and staleness is computed at query time instead of being stored.
+
+Stale is a momentary report from a single-system entry point, not a state change — the system still claims its file. A system that has actually given up its file linkage is Unbound.
+
+### Orphan
+A file-backed design system that no longer appears in a repository root's discovery set, because its DESIGN.md was deleted, renamed, or moved out of a discovered location.
+
+Orphan describes what a batch reindex finds, not a status the system carries — the outcome of finding one is that the system becomes Unbound.
+
+### Unbound
+A design system whose file linkage has been cleared after it was found to be an orphan, leaving it as a database-only record that is re-linked by slug if its file returns.
+
+Unbinding is deliberately not deletion. A design system is the anchor for prototype runs, exports, and derived-system provenance, none of which can be regenerated from a DESIGN.md, and re-indexing issues fresh identities rather than restoring the ones a delete destroyed. Unbinding therefore keeps the blast radius of a vanished file at the file linkage itself. A repository root that does not exist is rejected rather than treated as a root whose files were all deleted, since discovery cannot tell the two apart.

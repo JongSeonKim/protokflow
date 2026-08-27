@@ -26,15 +26,6 @@ class SourceMetadata:
     source_mtime_ns: int | None
     source_size: int | None
 
-    @classmethod
-    def from_snapshot(cls, snapshot: DesignSourceSnapshot) -> SourceMetadata:
-        """Return the metadata describing a parsed source snapshot."""
-        return cls(
-            source_digest=snapshot.source_digest,
-            source_mtime_ns=snapshot.source_mtime_ns,
-            source_size=snapshot.source_size,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class DesignSourceSnapshot:
@@ -146,7 +137,13 @@ def observe_design_source(
     source_path: str,
     previous: SourceMetadata,
 ) -> SourceObservation:
-    """Observe a file-backed source and classify its change state."""
+    """Observe a file-backed source and classify its change state.
+
+    The outcome enum is total: a source that disappears between the stat and
+    the read — the window a branch switch opens — is reported as ``MISSING``
+    like one that was already gone, leaving the query-versus-patch policy to
+    the caller instead of raising through it.
+    """
     path = root / source_path
     stat = stat_source(path)
     if stat is None:
@@ -154,7 +151,10 @@ def observe_design_source(
     if stat_matches(previous, stat):
         return SourceObservation(change=SourceChange.UNCHANGED)
 
-    content, read_stat = read_source_bytes(path, slug=slug)
+    try:
+        content, read_stat = read_source_bytes(path, slug=slug)
+    except MissingSourceFileError:
+        return SourceObservation(change=SourceChange.MISSING)
     digest = hashlib.sha256(content).hexdigest()
     metadata = SourceMetadata(
         source_digest=digest,

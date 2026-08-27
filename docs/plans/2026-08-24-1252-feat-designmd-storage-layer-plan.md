@@ -147,7 +147,7 @@ Protokflow의 저장소 계층을 파일↔DB 양방향 루프로 완성한다. 
 - KTD9. **write-through는 파일을 먼저 쓰고 DB 트랜잭션을 나중에 커밋한다.** DB와 파일은 하나의 트랜잭션으로 묶을 수 없으므로 실패 지점에 따라 두 가지 결과만 남게 설계한다. 파일 쓰기가 실패하면 DB 트랜잭션이 롤백되어 아무것도 바뀌지 않는다. 파일 쓰기 성공 후 DB 커밋이 실패하면 파일이 DB보다 앞서지만, 다음 진입점의 선검사(R21)가 digest 불일치를 감지해 파일로부터 재인덱싱한다. 파일이 복구 원본이라는 저장소 위상 불변식이 이 방향을 강제한다 — 반대 순서는 DB가 앞서고 파일이 뒤처지는 상태를 만들며, 선검사가 이를 되돌릴 방법이 없다. `Governs R16, R17`
 
 - KTD10. **Front Matter 부재 문서는 수용하고, 본문의 fenced YAML 블록은 인덱싱 시점에 거부한다.** 정본 스펙이 Front Matter를 optional로 규정하고("An optional YAML frontmatter") 공식 린터 0.4.0 역시 Front Matter 부재 문서를 경고 1건(`NO_YAML_FOUND`)으로 통과시키므로, Front Matter 부재는 유효한 문서 형태다. 인덱싱 시 `title`은 slug로 폴백하여 `design_systems.title`의 NOT NULL 제약을 충족하고, `front_matter_raw`는 빈 문자열(`''`), 토큰은 0건으로 저장한다. 반면 본문의 fenced YAML 블록(```yaml / ```yml)은 공식 파서의 비규범적 확장으로, 이를 수용하려면 소스 위치 추적, 본문 패치, 중복 섹션 병합 등 저장 모델 전반의 재설계가 요구되어 KTD1의 단일 직렬화 경로가 훼손된다. 따라서 KTD3의 YAML 앵커 거부와 동일하게 인덱싱 시점 명시적 오류로 거부하고 Front Matter 통합을 안내한다. `Governs R16, R17`
-- KTD11. **배치 재인덱싱은 고아 행을 하드 삭제하고, 개별 진입점의 파일 부재는 조회 시점 파생 stale로 보고한다.** `index_all`은 발견 집합에 없는 파일 기반 행(`source_path` NOT NULL)을 upsert와 같은 트랜잭션에서 삭제한다. 토큰은 CASCADE로 제거되고 DB 전용 행(`source_path` NULL, R22 영역)은 유지된다. 반면 진입점 조회에서 파일이 없으면 행을 유지한다 — 브랜치 전환 중 일시 부재와 영구 삭제를 구분할 정보가 없으며, stale는 저장 컬럼 없이 조회 시점에 파생한다. "DB는 소멸 가능, 파일이 복구 원본"(KTD9) 저장소 위상 및 U8 `protokflow index` 강제 재인덱싱 탈출구와 정합한다. 전면 stale 표시 및 현상 유지 방식은 배치마다 stale 행이 누적되고 U8 `status`가 거짓 동기화 상태를 보고하므로 배제한다. `Governs R17, R21`
+- KTD11. **배치 재인덱싱은 고아 행의 소스 바인딩만 해제하고, 개별 진입점의 파일 부재는 조회 시점 파생 stale로 보고한다.** `index_all`은 발견 집합에 없는 파일 기반 행(`source_path` NOT NULL)의 `source_*` 컬럼과 `synced_at`을 upsert와 같은 트랜잭션에서 NULL로 되돌린다. 행 자체와 `id`, 토큰, `derived_from_id` 계보는 보존되므로 파일이 돌아오면 slug 기준 upsert가 같은 행을 다시 바인딩한다. DB 전용 행(`source_path` NULL, R22 영역)과 다른 루트에 묶인 행은 손대지 않는다. 반면 진입점 조회에서 파일이 없으면 행을 유지한다 — 브랜치 전환 중 일시 부재와 영구 삭제를 구분할 정보가 없으며, stale는 저장 컬럼 없이 조회 시점에 파생한다. "DB는 소멸 가능, 파일이 복구 원본"(KTD9) 위상은 파일에서 재생성 가능한 데이터에만 성립한다 — `design_systems.id`는 `prototype_runs`가 ON DELETE CASCADE로 참조해 `candidates`→`exports`·`slot_contents`·`token_patches`까지 연쇄하고 `derived_from_id`는 ON DELETE SET NULL로 파생 계보를 지우는데, 이 데이터는 어느 `DESIGN.md`에도 없다. 토큰 `id`가 sync마다 재발급되므로 하드 삭제는 재인덱싱으로도 복구되지 않는다. 따라서 하드 삭제는 배제하고, 바인딩 해제로 blast radius를 docstring이 약속하는 범위(파일 연결)로 축소한다. 전면 stale 표시 및 현상 유지 방식은 배치마다 stale 행이 누적되고 U8 `status`가 거짓 동기화 상태를 보고하므로 배제한다. `Governs R17, R21`
 
 ### High-Level Technical Design
 
@@ -167,14 +167,24 @@ flowchart LR
     end
 
     subgraph SVC["service (정책·잠금·트랜잭션 소유, KTD5)"]
-        IDX["index_design_system"]
+        IDX["index_all<br/>루트 검증 · 고아 바인딩 해제"]
         REC["_reconcile_source<br/>선검사 정책 R21"]
         WT["apply_token_patch"]
+        LOCK["_index_lock: AsyncReadWriteLock<br/>index_all=write · 조회/패치=read<br/>+ _lock_for(slug)"]
+    end
+
+    subgraph COMMON["common"]
+        RWLOCK["rwlock<br/>writer-preferring RW 잠금"]
     end
 
     subgraph STORE["storage (기술 어댑터, KTD5)"]
         SOURCE["design_source<br/>관찰 · 읽기 · 해시 · 파싱"]
         DSSTORE["design_system_store<br/>ORM 매핑 · DAO 조합"]
+    end
+
+    subgraph CRUDL["crud (SQLAlchemy 문장, KTD5)"]
+        DSDAO["design_system_dao<br/>upsert · unbind_orphan_sources"]
+        DTDAO["design_token_dao<br/>replace · 소유권 검사"]
     end
 
     subgraph DB["SQLite (.protokflow/protokflow.db)"]
@@ -188,16 +198,23 @@ flowchart LR
     IDX --> SOURCE
     SOURCE --> PARSE
     PARSE --> DSSTORE
-    DSSTORE --> DS
-    DSSTORE --> DT
+    DSSTORE --> DSDAO
+    DSSTORE --> DTDAO
+    DSDAO --> DS
+    DTDAO --> DT
     REC -.관찰.-> SOURCE
     REC --> DSSTORE
-    WT --> DS
+    WT --> DSSTORE
+    LOCK -.사용.-> RWLOCK
     DS --> PATCH
     PATCH -->|write-through| ROOT
 ```
 
-파싱과 직렬화는 DB를 모른다. service는 정책과 트랜잭션 경계를, storage 어댑터는 파일 접근과 ORM 매핑을 소유한다.
+파싱과 직렬화는 DB를 모른다. service는 정책과 트랜잭션 경계를, storage 어댑터는 파일 접근과 ORM 매핑을, `crud/`는 SQLAlchemy 문장을 소유한다.
+
+동시성 제어는 `AsyncReadWriteLock`(판독/기록 잠금)과 slug 단위 상호배제(`_lock_for(slug)`)의 2단계 계층 구조를 적용한다. `index_all` 실행 시에는 배타적 기록(write) 잠금을 획득하여 조회 및 패치를 차단하며, 개별 slug의 조회 요청은 판독(read) 잠금을 공유하여 병렬 처리하되 slug별 배타성은 `_lock_for(slug)`를 통해 보장한다. 단일 뮤텍스 방식은 전체 인덱싱 잠금과 slug별 잠금의 단위를 분리하지 못해 slug 수준의 병렬성을 저해하므로 배제한다.
+
+`design_token_dao.replace`는 전달된 토큰 엔티티 컬렉션이 모두 교체 대상 부모(`design_system_id`)에 속하는지 삭제문 실행 전에 검증한다. `MappedAsDataclass` 특성상 `storage/` 계층의 빌드 시점에는 소유권 검증이 불가하므로, 실제 DB 반영 시점인 DAO 계층에서 무결성을 검증한다. 본 검증 로직의 계층 배치와 KTD5 원칙 간의 아키텍처 결정 사항은 `docs/explainers/2026-08-27-designmd-storage-contract-shift.html`(결정 B)를 참조한다.
 
 #### 재조정 선검사 판정
 
@@ -207,7 +224,7 @@ flowchart TD
     C -->|아니오| Y["조회: stale 판정·DB 유지<br/>패치: MissingSourceFileError"]
     C -->|예| D["stat: mtime_ns, size"]
     D --> E{"저장된 값과<br/>일치하는가?"}
-    E -->|예| Z
+    E -->|예| Z["변경 없음 — 조기 반환"]
     E -->|아니오| F["sha256 계산"]
     F --> G{"source_digest 와<br/>일치하는가?"}
     G -->|예| H["mtime_ns · size 만 갱신"]
@@ -215,6 +232,8 @@ flowchart TD
 ```
 
 해시 계산은 `stat` 불일치 시에만 발생한다. 터치만 되고 내용이 같은 파일은 메타데이터만 갱신하고 재파싱하지 않는다.
+
+파일 존재 여부 확인 단계는 `stat` 호출 시점의 파일 부재뿐만 아니라, `stat` 확인과 실제 파일 읽기 사이의 경쟁 상태(TOCTOU)로 인해 파일이 소멸되는 상황까지 포괄한다. 관찰 어댑터(`design_source`)는 이 시점에 발생하는 `MissingSourceFileError`를 `MISSING` 상태로 일원화하여 분류하며, 이를 통해 진입점별 정책(조회 시 stale 판정, 패치 시 거부)이 예외 경로로 우회되지 않고 일관되게 처리된다. 이는 Git 브랜치 전환 등으로 파일이 일시적으로 사라지는 시나리오에 대한 안전성을 보장한다.
 
 ### Assumptions
 - 프로토타입 검증 아티팩트(`.context/compound-engineering/ce-prototype/2026-08-24-designmd-roundtrip/`)의 테스트 픽스처 및 검증 드라이버를 U2 이식 단계에서 참조한다.
@@ -445,7 +464,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 
 **Files**:
 - `backend/app/protokflow/service/reconcile.py`
-- `backend/app/protokflow/service/design_system_service.py` — 조회 진입점 추가, 진입점에 선검사 삽입, `index_all` 고아 삭제
+- `backend/app/protokflow/service/design_system_service.py` — 조회 진입점 추가, 진입점에 선검사 삽입, `index_all` 고아 바인딩 해제
 - `backend/app/protokflow/crud/crud_design_system.py` — 고아 행 삭제 쿼리
 - `backend/app/protokflow/error/storage.py` — `MissingSourceFileError` 추가. 저장소 계층 예외는 이슈 #20 분리 결과로 이 모듈에 위치한다.
 - `tests/app/protokflow/service/test_reconcile.py`
@@ -459,7 +478,7 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 5. 불일치 시에만 sha256을 계산해 `source_digest`와 비교한다. 해시가 같으면 `mtime_ns`·`size`만 갱신하고 재파싱하지 않는다 — 터치만 된 파일 경로다.
 6. 해시가 다르면 U4의 인덱싱을 재실행한다. 재인덱싱이 거부되는 경우(앵커 도입 등) 이전 DB 상태를 유지한다.
 7. 파일이 사라진 경우 진입점별로 동작이 갈린다. 조회·상태 진입점은 DB 상태를 유지하고 stale를 조회 시점 파생 판정으로 반환한다. 저장 컬럼은 추가하지 않는다(KTD11) — 브랜치 전환 중 일시 부재와 영구 삭제를 구분할 정보가 없다. 패치 진입점은 `MissingSourceFileError`로 거부하고 파일·DB 어느 쪽도 변경하지 않는다 — 패치의 계약은 항상 파일을 쓰는 것이므로(U5), 파일 없는 성공은 무결성 위반을 숨기고 DB 재생성은 파일 기반 복구 위상(KTD9)을 뒤집는다.
-8. `index_all`은 발견 집합에 없는 파일 기반 행(`source_path` NOT NULL)을 upsert와 같은 트랜잭션에서 하드 삭제한다(KTD11). 토큰은 CASCADE로 제거되고 DB 전용 행(`source_path` NULL)은 유지된다. 삭제 쿼리는 `crud/`가 소유한다(KTD5). 발견 집합이 비어 있어도 트랜잭션을 열어 고아 삭제를 실행한다 — 마지막 파일 삭제 경로가 빈 집합을 만들므로, 조기 반환은 고아 삭제를 우회한다.
+8. `index_all`은 발견 집합에 없는 파일 기반 행(`source_path` NOT NULL)의 소스 바인딩을 upsert와 같은 트랜잭션에서 해제한다(KTD11). 행과 토큰은 유지되어 DB 전용 행이 되고, DB 전용 행(`source_path` NULL)은 그대로 유지된다. 갱신 쿼리는 `crud/`가 소유한다(KTD5). 발견 집합이 비어 있어도 트랜잭션을 열어 바인딩 해제를 실행한다 — 마지막 파일 삭제 경로가 빈 집합을 만들므로, 조기 반환은 이를 우회한다. 단 `repo_root`가 존재하는 디렉터리가 아니면 `SourceRootNotFoundError`로 거부한다 — 오타나 마운트 해제된 볼륨에서의 발견 결과도 빈 집합이라, 마지막 파일 삭제와 구분되지 않은 채 해당 루트의 모든 바인딩을 해제하게 된다.
 
 **Test scenarios**:
 - Covers AE8. 파일 내용 변경 후 조회가 갱신된 토큰을 반환한다.
@@ -477,11 +496,13 @@ U1이 모든 것의 선행 조건이다. U2는 U1 이후 독립적으로 진행 
 - 진입 전 외부 수정은 흡수된 뒤 패치가 적용되고 외부 변경과 패치가 모두 파일·DB에 반영된다.
 - 선검사 통과 후 원자적 쓰기 직전 창에서 파일이 변경되면 `ConcurrentModificationError`가 발생한다.
 - 쓰기 직전 재검증(CAS)에서 불일치가 감지되면 `ConcurrentModificationError`가 발생하고 임시 파일이 폐기되며 원본이 보존된다.
-- 파일을 삭제한 뒤 `index_all`을 재실행하면 해당 디자인 시스템 행과 토큰이 단일 트랜잭션에서 삭제된다 (KTD11).
-- 레포의 모든 `DESIGN.md`를 삭제한 뒤 `index_all` 재실행 시 빈 발견 집합에서도 파일 기반 행 전체가 삭제된다.
+- 파일을 삭제한 뒤 `index_all`을 재실행하면 해당 행의 `source_*`가 단일 트랜잭션에서 NULL이 되고 `id`·토큰은 보존된다 (KTD11).
+- 바인딩이 해제된 행은 파일이 돌아오면 같은 `id`로 다시 바인딩되고 `derived_from_id` 계보가 유지된다.
+- 레포의 모든 `DESIGN.md`를 삭제한 뒤 `index_all` 재실행 시 빈 발견 집합에서도 파일 기반 행 전체의 바인딩이 해제된다.
 - DB 전용 행(`source_path` NULL)은 `index_all` 재실행 후에도 유지된다.
+- 존재하지 않는 `repo_root`로 `index_all`을 호출하면 `SourceRootNotFoundError`로 거부되고 어떤 행도 바인딩을 잃지 않는다.
 
-**Verification**: 인덱싱 후 파일을 외부에서 수정하고 조회했을 때 새 값이 나오는지, 수정하지 않았을 때 해시 계산이 생략되는지 확인한다. 고아 삭제(KTD11) 및 파일 선행 복구(KTD6/KTD9) 시나리오가 자동화 테스트로 검증된다.
+**Verification**: 인덱싱 후 파일을 외부에서 수정하고 조회했을 때 새 값이 나오는지, 수정하지 않았을 때 해시 계산이 생략되는지 확인한다. 고아 바인딩 해제(KTD11) 및 파일 선행 복구(KTD6/KTD9) 시나리오가 자동화 테스트로 검증된다.
 
 ---
 

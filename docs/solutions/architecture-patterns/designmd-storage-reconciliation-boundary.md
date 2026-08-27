@@ -73,7 +73,7 @@ The system strictly divides responsibilities across four distinct layers without
 #### Layer Responsibilities
 - **Core Layer** ([`backend/app/protokflow/core/design_md.py`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/core/design_md.py), [`backend/app/protokflow/core/discovery.py`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/core/discovery.py)): Pure Python module implementing round-trip YAML parsing via `ruamel.yaml` (`typ="rt"`). Enforces strict specification compliance by rejecting YAML anchors (`&anchor`) and fenced body YAML blocks. Flattens design tokens into dot-notated paths and performs single-line in-place patch serialization without touching database or async primitives.
 - **Storage Adapters** ([`backend/app/protokflow/storage/design_source.py`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py), [`backend/app/protokflow/storage/design_system_store.py`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_system_store.py)):
-  - `design_source.py`: Inspects filesystem status, executes single-descriptor atomic byte reads, computes SHA-256 digests, and triggers core parsing. Contains no database or ORM imports.
+  - `design_source.py`: Inspects filesystem status, executes single-descriptor atomic byte reads, computes SHA-256 digests, and triggers core parsing. It also owns the write side of the adapter — atomic write-through of token patches ([`atomic_write_bytes`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L214-L295), [`write_token_patch`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L298-L331)). Contains no database or ORM imports.
   - `design_system_store.py`: Maps domain snapshots to ORM models ([`build_design_system`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_system_store.py#L16-L34), [`build_design_tokens`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_system_store.py#L36-L54)) and coordinates multi-DAO persistence ([`sync_source_snapshot`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_system_store.py#L56-L72), [`refresh_source_metadata`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_system_store.py#L74-L86)) using a caller-provided `AsyncSession`. It never calls `begin()`, `commit()`, or `rollback()`.
 - **Service Layer** ([`backend/app/protokflow/service/design_system_service.py`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py)): Coordinates end-to-end workflows (`index_all`, `get`, `apply_token_patch`). Owns session creation (`async_db_session.begin()`), concurrency locks, repo-root path validations, row existence re-checks, and policy mapping.
 - **CRUD Layer** ([`backend/app/protokflow/crud/crud_design_system.py`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/crud/crud_design_system.py), [`backend/app/protokflow/crud/crud_design_token.py`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/crud/crud_design_token.py)): Houses raw SQLAlchemy statements. Enforces table-level constraints (e.g., verifying that all tokens in a replacement set match the target `design_system_id` to prevent silent reparenting via [`TokenReparentingError`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/crud/crud_design_token.py#L31-L67)).
@@ -82,7 +82,7 @@ The system strictly divides responsibilities across four distinct layers without
 
 ### 2. Observation State Machine
 
-Source observation is encapsulated in [`observe_design_source`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L133-L178), which returns a total enum classification ([`SourceChange`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L43-L50)):
+Source observation is encapsulated in [`observe_design_source`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L148-L193), which returns a total enum classification ([`SourceChange`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L58-L64)):
 
 ```mermaid
 flowchart TD
@@ -122,7 +122,7 @@ File modification timestamps are stored as integer nanoseconds ([`DesignSystem.s
 > Modern operating systems (macOS APFS, Linux ext4) record filesystem timestamps with 1-nanosecond resolution. Storing mtime as a standard 64-bit float (`REAL`) results in a Unit in the Last Place (ULP) resolution of ~238 nanoseconds at current epoch values (`> 1.7e9`). Float conversions discard timestamp deltas smaller than 238ns, causing rapid successive edits (e.g., scripted tests or automated generators) to be falsely classified as `UNCHANGED`. Integer nanoseconds eliminate all precision loss.
 
 #### Single-Descriptor Read Invariant
-To eliminate Time-Of-Check to Time-Of-Use (TOCTOU) race conditions during file ingestion, [`read_source_bytes`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L70-L89) binds byte reading and metadata capture to a single open file descriptor:
+To eliminate Time-Of-Check to Time-Of-Use (TOCTOU) race conditions during file ingestion, [`read_source_bytes`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L85-L103) binds byte reading and metadata capture to a single open file descriptor:
 ```python
 with path.open("rb") as handle:
     content = handle.read()
@@ -134,7 +134,7 @@ This guarantees that `source_digest`, `source_size`, and `source_mtime_ns` descr
 
 ### 4. Write-Through Compare-And-Swap (CAS) and File-Ahead Recovery Invariant
 
-Modifying tokens via [`apply_token_patch`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L414-L489) executes a multi-step write-through protocol that coordinates filesystem mutation with database persistence.
+Modifying tokens via [`apply_token_patch`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L219-L293) executes a multi-step write-through protocol that coordinates filesystem mutation with database persistence.
 
 ```mermaid
 sequenceDiagram
@@ -171,11 +171,14 @@ sequenceDiagram
     Service-->>Caller: Return updated DesignSystem
 ```
 
-#### Atomic File Writing and Link Safety ([`_atomic_write_bytes`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L112-L194))
+#### Atomic File Writing and Link Safety ([`atomic_write_bytes`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L214-L295))
+
+Atomic writing lives in the storage adapter and is invoked by the service through [`write_token_patch`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L298-L331), which serializes the patched document and hands the resulting bytes to `atomic_write_bytes`.
+
 1. **Link Rejection**: Symlinks (`os.path.islink`) and hard links (`stat.st_nlink > 1`) are explicitly rejected with [`UnsupportedSourceLinkError`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/error/storage.py#L40-L45) because `os.replace` overwrites directory inodes directly, which would destroy symlinks or break hard link alias chains.
 2. **CAS Verification**: If `expected_digest` is supplied, the file is re-read immediately prior to creating the temporary file. If the digest has diverged from the entry observation digest, [`ConcurrentModificationError`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/error/storage.py#L36-L37) is raised, preventing lost updates from external writers.
 3. **Same-Directory Temporary File**: A temporary file (`tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")`) is created in the same directory to guarantee atomic rename semantics on POSIX filesystems.
-4. **Fsync Flushing**: Both file content (`os.fsync(handle.fileno())`) and directory entries ([`_fsync_directory`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L94-L110)) are explicitly flushed to disk around `os.replace()`, preventing corrupt partial writes or lost directory pointer entries during system crashes.
+4. **Fsync Flushing**: Both file content (`os.fsync(handle.fileno())`) and directory entries ([`_fsync_directory`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L196-L211)) are explicitly flushed to disk around `os.replace()`, preventing corrupt partial writes or lost directory pointer entries during system crashes.
 
 #### File-Ahead Recovery Invariant
 Distributed 2-phase commit between disk and SQLite is impossible. Therefore, Protokflow strictly sequences write-through operations:
@@ -189,7 +192,7 @@ Distributed 2-phase commit between disk and SQLite is impossible. Therefore, Pro
 
 ### 5. 2-Tier Concurrency Architecture
 
-Concurrency control in [`DesignSystemService`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L256-L270) combines global reader-writer exclusion with fine-grained per-entity synchronization:
+Concurrency control in [`DesignSystemService`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L43-L62) combines global reader-writer exclusion with fine-grained per-entity synchronization:
 
 ```
                                   AsyncReadWriteLock (_index_lock)
@@ -211,15 +214,15 @@ Concurrency control in [`DesignSystemService`](file:///Users/xedoc/VscodeProject
    - `index_all` acquires the **exclusive write lock**, blocking all concurrent queries and patches across all slugs while batch discovery and orphan unbinding execute.
    - `get` and `apply_token_patch` acquire the **shared read lock**, allowing high-throughput concurrent processing across distinct design systems.
    - The lock is writer-preferring: waiting writers block incoming readers to prevent writer starvation.
-2. **Per-Slug Mutexes ([`_lock_for(slug)`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L263-L269))**:
+2. **Per-Slug Mutexes ([`_lock_for(slug)`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L50-L55))**:
    - Coroutines operating on the same slug (e.g., concurrent patches or interleaved query/patch operations) acquire a slug-specific `asyncio.Lock()`.
-   - **Memory Exhaustion Guard**: To prevent arbitrary key pollution in `self._locks`, [`_require_known_slug(slug)`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L270-L276) validates that the slug exists in the database before allocating a lock instance.
+   - **Memory Exhaustion Guard**: To prevent arbitrary key pollution in `self._locks`, [`_require_known_slug(slug)`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L58-L62) validates that the slug exists in the database before allocating a lock instance.
 
 ---
 
 ### 6. Non-Destructive Orphan Unbinding and Hard Deletion Prevention
 
-When source files are removed from disk (e.g., switching from a feature branch that introduced custom `design/{slug}.md` files back to `main`), [`index_all`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L327-L370) does **not** delete database rows.
+When source files are removed from disk (e.g., switching from a feature branch that introduced custom `design/{slug}.md` files back to `main`), [`index_all`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L132-L174) does **not** delete database rows.
 
 #### Why Hard Deletions are Prohibited
 The database schema links `design_systems.id` to execution artifacts:
@@ -280,7 +283,7 @@ statement = (
 
 ### 1. Observing Source Changes Without Database Coupling
 
-The source observation adapter ([`backend/app/protokflow/storage/design_source.py:133-178`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L133-L178)) classifies changes into pure, neutral outcomes:
+The source observation adapter ([`backend/app/protokflow/storage/design_source.py:148-193`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/storage/design_source.py#L148-L193)) classifies changes into pure, neutral outcomes:
 
 ```python
 from pathlib import Path
@@ -338,7 +341,7 @@ async def persist_example(session: AsyncSession, snapshot: DesignSourceSnapshot)
 
 ### 3. End-to-End Service Reconciliation
 
-The service reconciliation orchestrator ([`backend/app/protokflow/service/design_system_service.py:277-326`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L277-L326)) handles session creation, row existence re-checks, and error surfacing:
+The service reconciliation orchestrator ([`backend/app/protokflow/service/design_system_service.py:64-112`](file:///Users/xedoc/VscodeProjects/protokflow/backend/app/protokflow/service/design_system_service.py#L64-L112)) handles session creation, row existence re-checks, and error surfacing:
 
 ```python
 async def _reconcile_source(

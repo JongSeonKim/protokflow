@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import os
 from pathlib import Path
-from stat import S_IMODE, S_ISDIR
+from stat import S_ISDIR
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +26,6 @@ from backend.app.protokflow.error.storage import (
     SourceWriteError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
-    UnsupportedSourceLinkError,
 )
 from backend.database import db
 
@@ -260,7 +259,7 @@ async def test_row_deleted_mid_patch_is_not_revived(
     async def to_thread_that_deletes_row(
         func: object, /, *args: object, **kwargs: object
     ):
-        if func is service_module._patch_and_write:
+        if func is service_module.write_token_patch:
             async with db.async_db_session.begin() as session:
                 await design_system_dao.delete_model_by_column(session, slug="default")
         return await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
@@ -793,7 +792,7 @@ async def test_empty_token_patches_is_a_noop(
     def fail_write(*args: object, **kwargs: object) -> None:
         raise AssertionError("a no-op patch must not touch the file")
 
-    monkeypatch.setattr(service_module, "_atomic_write_bytes", fail_write)
+    monkeypatch.setattr(design_source_module, "atomic_write_bytes", fail_write)
 
     result = await design_system_service.apply_token_patch(
         repo_root=tmp_path, slug="default", token_patches={}
@@ -818,131 +817,3 @@ async def test_empty_token_patches_on_unknown_slug_still_raises(
         await design_system_service.apply_token_patch(
             repo_root=tmp_path, slug="missing-slug", token_patches={}
         )
-
-
-def test_atomic_write_preserves_non_default_file_mode(tmp_path: Path) -> None:
-    """copymode carries the target's mode onto the 0o600 mkstemp temp before the swap."""
-    target = tmp_path / "DESIGN.md"
-    target.write_bytes(b"original\n")
-    target.chmod(0o640)
-    mode_before = S_IMODE(os.stat(target).st_mode)
-    assert mode_before == 0o640  # distinct from mkstemp's default 0o600
-
-    service_module._atomic_write_bytes(target, b"new content\n")
-
-    assert target.read_bytes() == b"new content\n"
-    assert S_IMODE(os.stat(target).st_mode) == 0o640
-
-
-def test_atomic_write_unlinks_temp_when_copymode_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A copymode failure after the temp is written must unlink it and preserve the target."""
-    target = tmp_path / "DESIGN.md"
-    target.write_bytes(b"original\n")
-
-    def failing_copymode(*args: object, **kwargs: object) -> None:
-        raise OSError("simulated copymode failure")
-
-    monkeypatch.setattr(service_module.shutil, "copymode", failing_copymode)
-
-    with pytest.raises(SourceWriteError, match="simulated copymode failure"):
-        service_module._atomic_write_bytes(target, b"new content\n")
-
-    assert target.read_bytes() == b"original\n"
-    assert list(tmp_path.iterdir()) == [target]
-
-
-def test_atomic_write_unlinks_temp_when_handle_write_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A write failure into the temp file must unlink it and never touch the target."""
-    target = tmp_path / "DESIGN.md"
-    target.write_bytes(b"original\n")
-
-    real_fdopen = os.fdopen
-
-    def fdopen_with_failing_write(fd: int, mode: str = "wb") -> object:
-        # _atomic_write_bytes always opens the temp descriptor "wb"; wrap that
-        # real handle so only its write() fails while flush/fileno/close stay real.
-        handle = real_fdopen(fd, "wb")
-
-        class _FailingWriteHandle:
-            def __enter__(self) -> _FailingWriteHandle:
-                handle.__enter__()
-                return self
-
-            def __exit__(self, *exc: object) -> None:
-                handle.close()
-
-            def write(self, _data: object) -> int:
-                raise OSError("simulated write failure")
-
-            def flush(self) -> None:
-                handle.flush()
-
-            def fileno(self) -> int:
-                return handle.fileno()
-
-        return _FailingWriteHandle()
-
-    monkeypatch.setattr(service_module.os, "fdopen", fdopen_with_failing_write)
-
-    with pytest.raises(SourceWriteError, match="simulated write failure"):
-        service_module._atomic_write_bytes(target, b"new content\n")
-
-    assert target.read_bytes() == b"original\n"
-    assert list(tmp_path.iterdir()) == [target]
-
-
-@pytest.mark.skipif(
-    hasattr(os, "getuid") and os.getuid() == 0,
-    reason="root bypasses directory permission bits",
-)
-def test_atomic_write_wraps_permission_error_on_unwritable_parent(
-    tmp_path: Path,
-) -> None:
-    """mkstemp cannot create the temp in a read-only directory; wrapped with cause."""
-    design_dir = tmp_path / "locked"
-    design_dir.mkdir()
-    target = design_dir / "DESIGN.md"
-    target.write_bytes(b"original\n")
-    design_dir.chmod(0o500)
-    try:
-        with pytest.raises(SourceWriteError) as excinfo:
-            service_module._atomic_write_bytes(target, b"new content\n")
-    finally:
-        design_dir.chmod(0o700)
-
-    assert isinstance(excinfo.value.__cause__, PermissionError)
-    assert target.read_bytes() == b"original\n"
-
-
-def test_atomic_write_rejects_symlink_source(tmp_path: Path) -> None:
-    """Symlink sources are rejected to prevent replacing the link with a regular file."""
-    real_target = tmp_path / "real.md"
-    real_target.write_bytes(b"original\n")
-    link = tmp_path / "DESIGN.md"
-    link.symlink_to(real_target)
-
-    with pytest.raises(UnsupportedSourceLinkError):
-        service_module._atomic_write_bytes(link, b"new content\n")
-
-    assert link.is_symlink()
-    assert real_target.read_bytes() == b"original\n"
-    assert sorted(tmp_path.iterdir()) == sorted([real_target, link])
-
-
-def test_atomic_write_rejects_hard_linked_source(tmp_path: Path) -> None:
-    """Hard-linked sources are rejected to prevent breaking link aliases."""
-    target = tmp_path / "DESIGN.md"
-    target.write_bytes(b"original\n")
-    alias = tmp_path / "alias.md"
-    os.link(target, alias)
-
-    with pytest.raises(UnsupportedSourceLinkError):
-        service_module._atomic_write_bytes(target, b"new content\n")
-
-    assert target.read_bytes() == b"original\n"
-    assert alias.read_bytes() == b"original\n"
-    assert os.stat(target).st_ino == os.stat(alias).st_ino

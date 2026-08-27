@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from stat import S_IMODE
 
 import pytest
 
@@ -18,7 +19,11 @@ from backend.app.protokflow.error.design_md import (
     FencedYamlBlockError,
     InvalidEncodingError,
 )
-from backend.app.protokflow.error.storage import MissingSourceFileError
+from backend.app.protokflow.error.storage import (
+    MissingSourceFileError,
+    SourceWriteError,
+    UnsupportedSourceLinkError,
+)
 from backend.app.protokflow.storage import design_source as design_source_module
 from backend.app.protokflow.storage.design_source import (
     SourceChange,
@@ -324,3 +329,131 @@ def test_stat_matches_requires_both_persisted_fields(tmp_path: Path) -> None:
         )
         is False
     )
+
+
+def test_atomic_write_preserves_non_default_file_mode(tmp_path: Path) -> None:
+    """copymode carries the target's mode onto the 0o600 mkstemp temp before the swap."""
+    target = tmp_path / "DESIGN.md"
+    target.write_bytes(b"original\n")
+    target.chmod(0o640)
+    mode_before = S_IMODE(os.stat(target).st_mode)
+    assert mode_before == 0o640  # distinct from mkstemp's default 0o600
+
+    design_source_module.atomic_write_bytes(target, b"new content\n")
+
+    assert target.read_bytes() == b"new content\n"
+    assert S_IMODE(os.stat(target).st_mode) == 0o640
+
+
+def test_atomic_write_unlinks_temp_when_copymode_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copymode failure after the temp is written must unlink it and preserve the target."""
+    target = tmp_path / "DESIGN.md"
+    target.write_bytes(b"original\n")
+
+    def failing_copymode(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated copymode failure")
+
+    monkeypatch.setattr(design_source_module.shutil, "copymode", failing_copymode)
+
+    with pytest.raises(SourceWriteError, match="simulated copymode failure"):
+        design_source_module.atomic_write_bytes(target, b"new content\n")
+
+    assert target.read_bytes() == b"original\n"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_write_unlinks_temp_when_handle_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write failure into the temp file must unlink it and never touch the target."""
+    target = tmp_path / "DESIGN.md"
+    target.write_bytes(b"original\n")
+
+    real_fdopen = os.fdopen
+
+    def fdopen_with_failing_write(fd: int, mode: str = "wb") -> object:
+        # atomic_write_bytes always opens the temp descriptor "wb"; wrap that
+        # real handle so only its write() fails while flush/fileno/close stay real.
+        handle = real_fdopen(fd, "wb")
+
+        class _FailingWriteHandle:
+            def __enter__(self) -> _FailingWriteHandle:
+                handle.__enter__()
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                handle.close()
+
+            def write(self, _data: object) -> int:
+                raise OSError("simulated write failure")
+
+            def flush(self) -> None:
+                handle.flush()
+
+            def fileno(self) -> int:
+                return handle.fileno()
+
+        return _FailingWriteHandle()
+
+    monkeypatch.setattr(design_source_module.os, "fdopen", fdopen_with_failing_write)
+
+    with pytest.raises(SourceWriteError, match="simulated write failure"):
+        design_source_module.atomic_write_bytes(target, b"new content\n")
+
+    assert target.read_bytes() == b"original\n"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.skipif(
+    hasattr(os, "getuid") and os.getuid() == 0,
+    reason="root bypasses directory permission bits",
+)
+def test_atomic_write_wraps_permission_error_on_unwritable_parent(
+    tmp_path: Path,
+) -> None:
+    """mkstemp cannot create the temp in a read-only directory; wrapped with cause."""
+    design_dir = tmp_path / "locked"
+    design_dir.mkdir()
+    target = design_dir / "DESIGN.md"
+    target.write_bytes(b"original\n")
+    design_dir.chmod(0o500)
+    try:
+        with pytest.raises(SourceWriteError) as excinfo:
+            design_source_module.atomic_write_bytes(target, b"new content\n")
+    finally:
+        design_dir.chmod(0o700)
+
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+    assert target.read_bytes() == b"original\n"
+
+
+def test_atomic_write_rejects_symlink_source(tmp_path: Path) -> None:
+    """Symlink sources are rejected to prevent replacing the link with a regular file."""
+    real_target = tmp_path / "real.md"
+    real_target.write_bytes(b"original\n")
+    link = tmp_path / "DESIGN.md"
+    link.symlink_to(real_target)
+
+    with pytest.raises(UnsupportedSourceLinkError):
+        design_source_module.atomic_write_bytes(link, b"new content\n")
+
+    assert link.is_symlink()
+    assert real_target.read_bytes() == b"original\n"
+    assert sorted(tmp_path.iterdir()) == sorted([real_target, link])
+
+
+def test_atomic_write_rejects_hard_linked_source(tmp_path: Path) -> None:
+    """Hard-linked sources are rejected to prevent breaking link aliases."""
+    target = tmp_path / "DESIGN.md"
+    target.write_bytes(b"original\n")
+    alias = tmp_path / "alias.md"
+    os.link(target, alias)
+
+    with pytest.raises(UnsupportedSourceLinkError):
+        design_source_module.atomic_write_bytes(target, b"new content\n")
+
+    assert target.read_bytes() == b"original\n"
+    assert alias.read_bytes() == b"original\n"
+    assert os.stat(target).st_ino == os.stat(alias).st_ino

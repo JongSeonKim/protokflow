@@ -13,7 +13,6 @@ from sqlalchemy.orm import SessionTransaction
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.error.storage import ConcurrentModificationError
-from backend.app.protokflow.service import design_system_service as service_module
 from backend.app.protokflow.service.design_system_service import design_system_service
 from backend.app.protokflow.storage import design_source as design_source_module
 from backend.database import db
@@ -140,7 +139,7 @@ async def test_empty_patch_absorbs_external_change_without_rewriting_file(
     def fail_write(*args: object, **kwargs: object) -> None:
         raise AssertionError("an empty patch must not rewrite the file")
 
-    monkeypatch.setattr(service_module, "_atomic_write_bytes", fail_write)
+    monkeypatch.setattr(design_source_module, "atomic_write_bytes", fail_write)
 
     result = await design_system_service.apply_token_patch(
         repo_root=tmp_path,
@@ -231,17 +230,21 @@ async def test_concurrent_modification_in_write_window_raises_and_discards_temp(
     system_before = await _system_by_slug("default")
 
     external_content = _DESIGN_MD.replace("#222222", "#333333")
-    real_read = service_module.read_source_bytes
+    real_read = design_source_module.read_source_bytes
 
-    def read_that_lands_external_edit(path: Path) -> tuple[bytes, os.stat_result]:
-        if path == design_md_path:
-            # An external editor saves between the entry pre-check and the
-            # CAS re-read just before the temporary file is created.
+    def read_that_lands_external_edit(
+        path: Path, *, slug: str | None = None
+    ) -> tuple[bytes, os.stat_result]:
+        # The CAS re-read inside atomic_write_bytes calls read_source_bytes
+        # without a slug; the baseline parse passes one. Injecting only on the
+        # slug-less call lands the external edit in the verify-to-replace window
+        # while leaving the entry digest at the original content.
+        if slug is None and path == design_md_path:
             design_md_path.write_text(external_content, encoding="utf-8")
-        return real_read(path)
+        return real_read(path, slug=slug)
 
     monkeypatch.setattr(
-        service_module, "read_source_bytes", read_that_lands_external_edit
+        design_source_module, "read_source_bytes", read_that_lands_external_edit
     )
 
     with pytest.raises(ConcurrentModificationError, match="refetch"):

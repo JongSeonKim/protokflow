@@ -161,6 +161,11 @@ requires no database schema, public API, or product-contract change.
 - Update `index_all` and `_persist_token_patch` to use the new storage APIs.
 - Keep `_index_lock`, per-slug locks, source-root validation, row rechecks, and
   transaction creation in `DesignSystemService`.
+- Make `_index_lock` a read-write lock rather than a mutex: `index_all` takes
+  the write side, `get` and `apply_token_patch` take the read side. A plain
+  mutex held at all three entry points would make the per-slug lock inert and
+  serialize queries on unrelated slugs against each other, neither of which
+  the exclusion between indexing and querying requires.
 
 **Tests**
 
@@ -173,6 +178,8 @@ requires no database schema, public API, or product-contract change.
 - CAS still rejects a writer landing between entry observation and atomic write.
 - A design-system row deleted during reconciliation is not revived.
 - Invalid external content leaves the prior database state intact.
+- Queries on different slugs proceed concurrently, while an indexing run
+  excludes queries for its duration.
 
 ## U4. Reorganize test ownership
 
@@ -240,4 +247,3 @@ pre-release.
 - Run `uv run ruff check`.
 - Run `uv run ruff format --check`.
 - Run `uv run pytest`.
-

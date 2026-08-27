@@ -128,11 +128,13 @@ async def test_empty_patch_absorbs_external_change_without_rewriting_file(
     """An empty patch still reconciles, but never rewrites the absorbed file."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
-    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    # write_bytes, not write_text: the assertions below are byte-exact, and
+    # write_text leaves newline=None, which rewrites LF to CRLF on Windows.
+    design_md_path.write_bytes(_DESIGN_MD.encode("utf-8"))
     await design_system_service.index_all(repo_root=tmp_path)
 
     external_content = _DESIGN_MD.replace("#222222", "#333333")
-    design_md_path.write_text(external_content, encoding="utf-8")
+    design_md_path.write_bytes(external_content.encode("utf-8"))
     stat_before = os.stat(design_md_path)
 
     def fail_write(*args: object, **kwargs: object) -> None:

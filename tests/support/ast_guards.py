@@ -37,7 +37,7 @@ ALLOWED_MODULES = {
 def scanned_modules() -> tuple[tuple[Path, ast.AST], ...]:
     """Scan and parse all eligible test files into AST trees, cached for meta-tests."""
     return tuple(
-        (path, ast.parse(path.read_text(), filename=str(path)))
+        (path, ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
         for path in TESTS_DIR.rglob("*.py")
         if not is_meta_module(path) and not is_allowed_harness_module(path)
     )

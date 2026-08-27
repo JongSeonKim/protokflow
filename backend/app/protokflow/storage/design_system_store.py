@@ -4,10 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
-from backend.app.protokflow.error.storage import (
-    TokenReparentingError,
-    UnknownDesignSystemError,
-)
+from backend.app.protokflow.error.storage import UnknownDesignSystemError
 from backend.app.protokflow.model import DesignSystem, DesignToken
 from backend.app.protokflow.model.types import utcnow
 from backend.app.protokflow.storage.design_source import (
@@ -39,22 +36,21 @@ def build_design_system(snapshot: DesignSourceSnapshot) -> DesignSystem:
 def build_design_tokens(
     snapshot: DesignSourceSnapshot, design_system_id: str
 ) -> list[DesignToken]:
-    """Build storage token models from validated source data."""
-    tokens: list[DesignToken] = []
-    for token in snapshot.parsed.tokens:
-        design_token = DesignToken(
+    """Build storage token models owned by ``design_system_id``.
+
+    Ownership is enforced where it can actually be violated — by
+    ``design_token_dao.replace``, which checks every supplied row against the
+    parent whose token set it replaces.
+    """
+    return [
+        DesignToken(
             design_system_id,
             token.tier,
             token.token_path,
             token.value,
         )
-        if design_token.design_system_id != design_system_id:
-            raise TokenReparentingError(
-                f"cannot reparent token '{design_token.token_path}' from design system "
-                f"'{design_token.design_system_id}' to '{design_system_id}'"
-            )
-        tokens.append(design_token)
-    return tokens
+        for token in snapshot.parsed.tokens
+    ]
 
 
 async def sync_source_snapshot(

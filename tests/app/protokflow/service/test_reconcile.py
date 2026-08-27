@@ -18,6 +18,7 @@ from backend.app.protokflow.model import DesignSystem
 from backend.app.protokflow.model import DesignToken
 from backend.app.protokflow.error.storage import (
     SourceRootMismatchError,
+    SourceRootNotFoundError,
     UnknownDesignSystemError,
 )
 from backend.app.protokflow.service import design_system_service as service_module
@@ -176,6 +177,11 @@ async def test_one_nanosecond_mtime_delta_still_triggers_digest_check(
     design_md_path.write_text(external, encoding="utf-8")
     bumped_ns = before.source_mtime_ns + 1
     os.utime(design_md_path, ns=(bumped_ns, bumped_ns))
+    if os.stat(design_md_path).st_mtime_ns != bumped_ns:
+        pytest.skip(
+            "filesystem mtime granularity is coarser than 1ns "
+            "(NTFS stores 100ns ticks), so the delta cannot be applied here"
+        )
 
     detail = await design_system_service.get(repo_root=tmp_path, slug="default")
 
@@ -402,7 +408,7 @@ async def test_row_deleted_during_reconciliation_is_not_revived(
         func: object, /, *args: object, **kwargs: object
     ) -> object:
         nonlocal deleted
-        result = await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
+        result: object = await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
         if func is service_module.observe_design_source and not deleted:
             deleted = True
             async with db.async_db_session.begin() as session:
@@ -441,10 +447,10 @@ async def test_reindex_replaces_token_set_without_leftovers(
     }
 
 
-async def test_index_all_deletes_orphaned_file_backed_rows(
+async def test_index_all_unbinds_orphaned_file_backed_rows(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
-    """Rows for files gone from the discovery set are hard-deleted."""
+    """Rows for files gone from the discovery set keep their id and tokens."""
     del test_db
     (tmp_path / "DESIGN.md").write_text(_DESIGN_MD, encoding="utf-8")
     design_dir = tmp_path / "design"
@@ -460,16 +466,51 @@ async def test_index_all_deletes_orphaned_file_backed_rows(
 
     assert [system.slug for system in indexed] == ["default"]
     async with db.async_db_session() as session:
-        assert await design_system_dao.get_by_slug(session, "admin") is None
+        admin = await design_system_dao.get_by_slug(session, "admin")
+        assert admin is not None
+        assert admin.id == admin_id
+        assert admin.source_path is None
+        assert admin.source_root is None
+        assert admin.source_digest is None
+        assert admin.source_mtime_ns is None
+        assert admin.source_size is None
+        assert admin.synced_at is None
         assert await design_system_dao.get_by_slug(session, "default") is not None
-        assert list(await design_token_dao.get_all(session, admin_id)) == []
+        assert await design_token_dao.get_all(session, admin_id)
         assert await design_token_dao.get_all(session, default_id)
 
 
-async def test_index_all_with_empty_discovery_still_deletes_file_backed_rows(
+async def test_index_all_rebinds_an_unbound_row_without_reissuing_its_id(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
-    """An empty discovery set still opens the transaction and deletes orphans."""
+    """A returning file rebinds the same row, so provenance links survive."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    await _index_default(tmp_path)
+    original_id = (await _system_by_slug("default")).id
+    async with db.async_db_session.begin() as session:
+        derived = DesignSystem(slug="derived", title="Derived")
+        derived.derived_from_id = original_id
+        await design_system_dao.create(session, derived)
+
+    design_md_path.unlink()
+    await design_system_service.index_all(repo_root=tmp_path)
+    design_md_path.write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    rebound = await _system_by_slug("default")
+    assert rebound.id == original_id
+    assert rebound.source_path == "DESIGN.md"
+    async with db.async_db_session() as session:
+        derived_row = await design_system_dao.get_by_slug(session, "derived")
+        assert derived_row is not None
+        assert derived_row.derived_from_id == original_id
+
+
+async def test_index_all_with_empty_discovery_still_unbinds_file_backed_rows(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """An empty discovery set still opens the transaction and unbinds orphans."""
     del test_db
     design_md_path = tmp_path / "DESIGN.md"
     await _index_default(tmp_path)
@@ -479,8 +520,128 @@ async def test_index_all_with_empty_discovery_still_deletes_file_backed_rows(
     assert await design_system_service.index_all(repo_root=tmp_path) == []
 
     async with db.async_db_session() as session:
-        assert await design_system_dao.get_by_slug(session, "default") is None
-        assert list(await design_token_dao.get_all(session, system_id)) == []
+        unbound = await design_system_dao.get_by_slug(session, "default")
+        assert unbound is not None
+        assert unbound.source_path is None
+        assert await design_token_dao.get_all(session, system_id)
+
+
+async def test_queries_on_different_slugs_do_not_serialize(
+    tmp_path: Path, test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The index lock is shared between readers, so per-slug work overlaps."""
+    del test_db
+    (tmp_path / "DESIGN.md").write_text(_DESIGN_MD, encoding="utf-8")
+    design_dir = tmp_path / "design"
+    design_dir.mkdir()
+    (design_dir / "admin.md").write_text(_DESIGN_MD, encoding="utf-8")
+    await design_system_service.index_all(repo_root=tmp_path)
+
+    inside = asyncio.Event()
+    both_inside = asyncio.Event()
+    real_reconcile = service_module.DesignSystemService._reconcile_source
+
+    async def gated_reconcile(
+        self: service_module.DesignSystemService, root: Path, system: DesignSystem
+    ) -> service_module.ReconciledSystem:
+        if inside.is_set():
+            both_inside.set()
+        else:
+            inside.set()
+            await asyncio.wait_for(both_inside.wait(), timeout=5)
+        return await real_reconcile(self, root, system)
+
+    monkeypatch.setattr(
+        service_module.DesignSystemService, "_reconcile_source", gated_reconcile
+    )
+
+    await asyncio.gather(
+        design_system_service.get(repo_root=tmp_path, slug="default"),
+        design_system_service.get(repo_root=tmp_path, slug="admin"),
+    )
+
+    assert both_inside.is_set()
+
+
+async def test_indexing_excludes_queries_for_its_duration(
+    tmp_path: Path, test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A query cannot observe the database midway through an indexing run."""
+    del test_db
+    await _index_default(tmp_path)
+    order: list[str] = []
+    indexing = asyncio.Event()
+    release = asyncio.Event()
+    real_unbind = design_system_dao.unbind_orphan_sources
+
+    async def gated_unbind(*args: object, **kwargs: object) -> int:
+        order.append("index-enter")
+        indexing.set()
+        await release.wait()
+        order.append("index-exit")
+        return await real_unbind(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(design_system_dao, "unbind_orphan_sources", gated_unbind)
+
+    async def query() -> None:
+        await indexing.wait()
+        await design_system_service.get(repo_root=tmp_path, slug="default")
+        order.append("query")
+
+    index_task = asyncio.ensure_future(
+        design_system_service.index_all(repo_root=tmp_path)
+    )
+    query_task = asyncio.ensure_future(query())
+    await indexing.wait()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert order == ["index-enter"]
+
+    release.set()
+    await asyncio.gather(index_task, query_task)
+
+    assert order == ["index-enter", "index-exit", "query"]
+
+
+async def test_source_deleted_after_the_stat_is_reported_as_stale(
+    tmp_path: Path, test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deletion inside the stat-to-read window keeps the row and marks it stale."""
+    del test_db
+    design_md_path = tmp_path / "DESIGN.md"
+    await _index_default(tmp_path)
+    design_md_path.write_text(_DESIGN_MD.replace("#111111", "#999999"), "utf-8")
+    real_stat_source = design_source_module.stat_source
+
+    def stat_then_delete(path: Path) -> os.stat_result | None:
+        stat = real_stat_source(path)
+        path.unlink()
+        return stat
+
+    monkeypatch.setattr(design_source_module, "stat_source", stat_then_delete)
+
+    detail = await design_system_service.get(repo_root=tmp_path, slug="default")
+
+    assert detail.stale is True
+    tokens = {token.token_path: token.value for token in detail.tokens}
+    assert tokens["colors.primary"] == "#111111"
+
+
+async def test_index_all_rejects_a_root_that_is_not_a_directory(
+    tmp_path: Path, test_db: AsyncSession
+) -> None:
+    """A missing root must not read as an empty repository and unbind everything."""
+    del test_db
+    await _index_default(tmp_path)
+    before = await _system_by_slug("default")
+
+    with pytest.raises(SourceRootNotFoundError, match="not an existing directory"):
+        await design_system_service.index_all(repo_root=tmp_path / "typo")
+
+    after = await _system_by_slug("default")
+    assert after.id == before.id
+    assert after.source_path == before.source_path
+    assert after.source_digest == before.source_digest
 
 
 async def test_index_all_preserves_db_only_rows(
@@ -503,14 +664,18 @@ async def test_index_all_preserves_db_only_rows(
     design_md_path.unlink()
     await design_system_service.index_all(repo_root=tmp_path)
     async with db.async_db_session() as session:
-        assert await design_system_dao.get_by_slug(session, "derived") is not None
-        assert await design_system_dao.get_by_slug(session, "default") is None
+        derived_row = await design_system_dao.get_by_slug(session, "derived")
+        assert derived_row is not None
+        assert derived_row.source_path is None
+        unbound = await design_system_dao.get_by_slug(session, "default")
+        assert unbound is not None
+        assert unbound.source_path is None
 
 
-async def test_index_all_orphan_deletion_is_scoped_to_indexed_root(
+async def test_index_all_orphan_unbinding_is_scoped_to_indexed_root(
     tmp_path: Path, test_db: AsyncSession
 ) -> None:
-    """Reindexing one repository root must not delete rows bound to another root."""
+    """Reindexing one repository root must not unbind rows bound to another root."""
     del test_db
     first_root = tmp_path / "first"
     second_root = tmp_path / "second"
@@ -522,7 +687,9 @@ async def test_index_all_orphan_deletion_is_scoped_to_indexed_root(
     await design_system_service.index_all(repo_root=second_root)
 
     async with db.async_db_session() as session:
-        assert await design_system_dao.get_by_slug(session, "default") is not None
+        untouched = await design_system_dao.get_by_slug(session, "default")
+        assert untouched is not None
+        assert untouched.source_root == first_root.resolve().as_posix()
 
 
 async def test_file_ahead_state_is_absorbed_by_next_query(

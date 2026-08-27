@@ -30,7 +30,6 @@ from backend.app.protokflow.storage.design_source import (
     SourceMetadata,
     observe_design_source,
     parse_design_file,
-    read_design_file,
     read_source_bytes,
 )
 from backend.app.protokflow.storage.design_system_store import (
@@ -41,11 +40,13 @@ from backend.app.protokflow.error.storage import (
     ConcurrentModificationError,
     MissingSourceFileError,
     SourceRootMismatchError,
+    SourceRootNotFoundError,
     SourceWriteError,
     UnknownDesignSystemError,
     UnbackedDesignSystemError,
     UnsupportedSourceLinkError,
 )
+from backend.common.rwlock import AsyncReadWriteLock
 from backend.database import db
 
 
@@ -256,7 +257,7 @@ class DesignSystemService:
     """Design system service class."""
 
     def __init__(self) -> None:
-        self._index_lock = asyncio.Lock()
+        self._index_lock = AsyncReadWriteLock()
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _lock_for(self, slug: str) -> asyncio.Lock:
@@ -328,25 +329,39 @@ class DesignSystemService:
         Index every DESIGN.md file discovered in a repository.
 
         File-backed rows bound to this repository root that are absent from
-        the discovery set are hard-deleted in the same transaction. An empty
-        discovery set still triggers orphan deletion.
+        the discovery set are unbound in the same transaction: they survive as
+        DB-only rows and a later run rebinds them by slug. An empty discovery
+        set still unbinds, so deleting every DESIGN.md drops every binding —
+        which is why a root that is not an existing directory is rejected
+        rather than read as an empty repository.
+
+        Indexing takes the write side of the index lock, excluding queries and
+        patches for its duration.
 
         :param repo_root: Repository root path
+        :raises SourceRootNotFoundError: The root is not an existing directory
         :return:
         """
-        async with self._index_lock:
-            root = Path(repo_root).resolve()
+        root = Path(repo_root).resolve()
+        if not root.is_dir():
+            raise SourceRootNotFoundError(
+                f"repository root is not an existing directory: {root}; "
+                f"indexing it would unbind every design system indexed from it"
+            )
+        async with self._index_lock.write():
             discovered = discover_design_files(root)
-            parsed_files = [
-                parse_design_file(root, design_file) for design_file in discovered
-            ]
+            parsed_files = await asyncio.to_thread(
+                lambda: [
+                    parse_design_file(root, design_file) for design_file in discovered
+                ]
+            )
 
             async with db.async_db_session.begin() as session:
                 systems = [
                     await sync_source_snapshot(session, parsed_file)
                     for parsed_file in parsed_files
                 ]
-                await design_system_dao.delete_orphan_sources(
+                await design_system_dao.unbind_orphan_sources(
                     session,
                     source_root=root.as_posix(),
                     keep_slugs=[design_file.slug for design_file in discovered],
@@ -368,7 +383,7 @@ class DesignSystemService:
         """
         root = Path(repo_root).resolve()
         await self._require_known_slug(slug)
-        async with self._index_lock, self._lock_for(slug):
+        async with self._index_lock.read(), self._lock_for(slug):
             async with db.async_db_session() as session:
                 system = await design_system_dao.get_by_slug(session, slug)
             if system is None:
@@ -423,7 +438,7 @@ class DesignSystemService:
         """
         root = Path(repo_root).resolve()
         await self._require_known_slug(slug)
-        async with self._index_lock, self._lock_for(slug):
+        async with self._index_lock.read(), self._lock_for(slug):
             async with db.async_db_session() as session:
                 system = await design_system_dao.get_by_slug(session, slug)
             if system is None:
@@ -453,14 +468,13 @@ class DesignSystemService:
 
             snapshot = reconciled.snapshot
             if snapshot is None:
-                # Stat matched: read once for the parse the patch needs.
+                # Reconciliation returned no snapshot (the stat matched, or a
+                # touch-only refresh ran): read and parse once for the patch.
                 source = DiscoveredDesignFile(slug=slug, path=root / source_path_value)
-                content, _, current = await asyncio.to_thread(read_design_file, source)
-                entry_digest = hashlib.sha256(content).hexdigest()
-            else:
-                # Snapshot from reconciliation serves as both patch baseline and CAS digest.
-                current = snapshot.parsed
-                entry_digest = snapshot.source_digest
+                snapshot = await asyncio.to_thread(parse_design_file, root, source)
+            # The snapshot serves as both the patch baseline and the CAS digest.
+            current = snapshot.parsed
+            entry_digest = snapshot.source_digest
 
             written = await asyncio.to_thread(
                 _patch_and_write,

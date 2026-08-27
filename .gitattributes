@@ -1,0 +1,3 @@
+# Python sources are LF-only so byte-exact test fixtures survive checkout.
+*.py text eol=lf
+*.md text eol=lf

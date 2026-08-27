@@ -167,14 +167,24 @@ flowchart LR
     end
 
     subgraph SVC["service (정책·잠금·트랜잭션 소유, KTD5)"]
-        IDX["index_design_system"]
+        IDX["index_all<br/>루트 검증 · 고아 바인딩 해제"]
         REC["_reconcile_source<br/>선검사 정책 R21"]
         WT["apply_token_patch"]
+        LOCK["_index_lock: AsyncReadWriteLock<br/>index_all=write · 조회/패치=read<br/>+ _lock_for(slug)"]
+    end
+
+    subgraph COMMON["common"]
+        RWLOCK["rwlock<br/>writer-preferring RW 잠금"]
     end
 
     subgraph STORE["storage (기술 어댑터, KTD5)"]
         SOURCE["design_source<br/>관찰 · 읽기 · 해시 · 파싱"]
         DSSTORE["design_system_store<br/>ORM 매핑 · DAO 조합"]
+    end
+
+    subgraph CRUDL["crud (SQLAlchemy 문장, KTD5)"]
+        DSDAO["design_system_dao<br/>upsert · unbind_orphan_sources"]
+        DTDAO["design_token_dao<br/>replace · 소유권 검사"]
     end
 
     subgraph DB["SQLite (.protokflow/protokflow.db)"]
@@ -188,16 +198,23 @@ flowchart LR
     IDX --> SOURCE
     SOURCE --> PARSE
     PARSE --> DSSTORE
-    DSSTORE --> DS
-    DSSTORE --> DT
+    DSSTORE --> DSDAO
+    DSSTORE --> DTDAO
+    DSDAO --> DS
+    DTDAO --> DT
     REC -.관찰.-> SOURCE
     REC --> DSSTORE
-    WT --> DS
+    WT --> DSSTORE
+    LOCK -.사용.-> RWLOCK
     DS --> PATCH
     PATCH -->|write-through| ROOT
 ```
 
-파싱과 직렬화는 DB를 모른다. service는 정책과 트랜잭션 경계를, storage 어댑터는 파일 접근과 ORM 매핑을 소유한다.
+파싱과 직렬화는 DB를 모른다. service는 정책과 트랜잭션 경계를, storage 어댑터는 파일 접근과 ORM 매핑을, `crud/`는 SQLAlchemy 문장을 소유한다.
+
+동시성 제어는 `AsyncReadWriteLock`(판독/기록 잠금)과 slug 단위 상호배제(`_lock_for(slug)`)의 2단계 계층 구조를 적용한다. `index_all` 실행 시에는 배타적 기록(write) 잠금을 획득하여 조회 및 패치를 차단하며, 개별 slug의 조회 요청은 판독(read) 잠금을 공유하여 병렬 처리하되 slug별 배타성은 `_lock_for(slug)`를 통해 보장한다. 단일 뮤텍스 방식은 전체 인덱싱 잠금과 slug별 잠금의 단위를 분리하지 못해 slug 수준의 병렬성을 저해하므로 배제한다.
+
+`design_token_dao.replace`는 전달된 토큰 엔티티 컬렉션이 모두 교체 대상 부모(`design_system_id`)에 속하는지 삭제문 실행 전에 검증한다. `MappedAsDataclass` 특성상 `storage/` 계층의 빌드 시점에는 소유권 검증이 불가하므로, 실제 DB 반영 시점인 DAO 계층에서 무결성을 검증한다. 본 검증 로직의 계층 배치와 KTD5 원칙 간의 아키텍처 결정 사항은 `docs/explainers/2026-08-27-designmd-storage-contract-shift.html`(결정 B)를 참조한다.
 
 #### 재조정 선검사 판정
 
@@ -207,7 +224,7 @@ flowchart TD
     C -->|아니오| Y["조회: stale 판정·DB 유지<br/>패치: MissingSourceFileError"]
     C -->|예| D["stat: mtime_ns, size"]
     D --> E{"저장된 값과<br/>일치하는가?"}
-    E -->|예| Z
+    E -->|예| Z["변경 없음 — 조기 반환"]
     E -->|아니오| F["sha256 계산"]
     F --> G{"source_digest 와<br/>일치하는가?"}
     G -->|예| H["mtime_ns · size 만 갱신"]
@@ -215,6 +232,8 @@ flowchart TD
 ```
 
 해시 계산은 `stat` 불일치 시에만 발생한다. 터치만 되고 내용이 같은 파일은 메타데이터만 갱신하고 재파싱하지 않는다.
+
+파일 존재 여부 확인 단계는 `stat` 호출 시점의 파일 부재뿐만 아니라, `stat` 확인과 실제 파일 읽기 사이의 경쟁 상태(TOCTOU)로 인해 파일이 소멸되는 상황까지 포괄한다. 관찰 어댑터(`design_source`)는 이 시점에 발생하는 `MissingSourceFileError`를 `MISSING` 상태로 일원화하여 분류하며, 이를 통해 진입점별 정책(조회 시 stale 판정, 패치 시 거부)이 예외 경로로 우회되지 않고 일관되게 처리된다. 이는 Git 브랜치 전환 등으로 파일이 일시적으로 사라지는 시나리오에 대한 안전성을 보장한다.
 
 ### Assumptions
 - 프로토타입 검증 아티팩트(`.context/compound-engineering/ce-prototype/2026-08-24-designmd-roundtrip/`)의 테스트 픽스처 및 검증 드라이버를 U2 이식 단계에서 참조한다.

@@ -24,14 +24,42 @@ An optional suite of tests with external tooling dependencies, partitioned by an
 
 ## Storage Reconciliation
 
+### Repository Runtime
+The single repository-scoped process that owns canonical `DESIGN.md` synchronization, SQLite writes, candidate operations, and the local protocol consumed by MCP, CLI, and Web clients.
+
+Clients do not bypass an unavailable Runtime to access the canonical file or database directly.
+
+### Canonical Design
+The root `DESIGN.md` tracked by Git and treated as the repository's only authoritative design document.
+
+Candidate documents remain in SQLite until an explicit export promotes one immutable revision to a new canonical generation.
+
+### Canonical Generation
+A monotonically ordered, fully committed version of the canonical design and its normalized token projection.
+
+Reads identify the generation they return. Commands that create or change canonical-dependent state wait until the Runtime has finished processing a newer observed file state.
+
+### Candidate Series
+A branch-like identity for one design direction whose head points to its latest candidate revision.
+
+### Candidate Revision
+An immutable candidate `DESIGN.md` document and normalized token projection, linked to at most one parent revision and to the canonical generation from which its series was derived.
+
+Editing a candidate creates a new revision instead of modifying history.
+
+### Change Origin
+The source category recorded for a canonical generation: `runtime` when a Repository Runtime operation initiated the file write, or `external` when the watcher observed a valid change without a matching Runtime operation.
+
 ### Precheck
-The stat-based first check every storage entry point runs against the linked DESIGN.md: compare the stored `(mtime_ns, size)` pair, and compute sha256 only on mismatch to decide between a metadata-only refresh and re-indexing.
+The startup or explicit synchronization check that compares the observed canonical `DESIGN.md` with the last committed canonical generation before the Runtime becomes ready or reports synchronization complete.
 
 ### Reconcile
-The process by which a storage entry point catches the database up to an externally changed DESIGN.md — the file is the recovery source of truth, so a digest mismatch re-indexes from the file before the entry point proceeds.
+The process by which the Repository Runtime validates a changed canonical `DESIGN.md` and commits the complete design and token projection as one new canonical generation.
 
 ### File-Ahead State
-The failure state after a successful file write whose database commit failed: the file is ahead of the database, and the next entry point's precheck absorbs the change by re-indexing rather than treating it as a concurrent modification.
+The failure state after a Runtime operation replaces the canonical file but stops before the corresponding canonical generation and operation result are fully committed.
+
+Runtime startup resolves this state from durable operation identity, target digest, the observed file, and committed canonical generations before accepting requests.
 
 ### Stale
-A read-time derived status for a design system whose source file is absent: the row is retained because a branch switch may make the file reappear, and staleness is computed at query time instead of being stored in a column.
+A freshness status for a valid committed canonical generation when the Runtime knows a newer file state is waiting for validation or cannot be committed because the current canonical source is invalid or missing.

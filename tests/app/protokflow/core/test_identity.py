@@ -81,15 +81,32 @@ def test_probe_detects_folding_for_uncased_directory_names(tmp_path: Path) -> No
     insensitive = True
     try:
         (tmp_path / "CASE-PROBE").touch(exist_ok=False)
+        insensitive = False
     except FileExistsError:
         insensitive = True
     except OSError:
         insensitive = False
+    finally:
+        (tmp_path / "CASE-PROBE").unlink(missing_ok=True)
+        ground_truth_probe.unlink(missing_ok=True)
 
     uncased = tmp_path / "2024"
     uncased.mkdir()
 
     assert identity._is_case_insensitive(uncased) is insensitive
+
+
+def test_probe_result_is_cached_per_directory(tmp_path: Path) -> None:
+    """Repeated probing of one directory answers from cache instead of new markers."""
+    directory = tmp_path / "CachedTarget"
+    directory.mkdir()
+    before = identity._is_case_insensitive.cache_info()
+
+    identity._is_case_insensitive(directory)
+    identity._is_case_insensitive(directory)
+
+    after = identity._is_case_insensitive.cache_info()
+    assert after.hits == before.hits + 1
 
 
 def test_probe_leaves_no_artifacts_behind(tmp_path: Path) -> None:

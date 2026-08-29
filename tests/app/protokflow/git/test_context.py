@@ -67,13 +67,27 @@ def test_identity_unchanged_by_new_head_on_same_branch(
     assert after.worktree_id == before.worktree_id
 
 
-def test_unborn_head_observes_symbolic_ref_without_oid(tmp_path: Path) -> None:
+def test_unborn_head_observes_symbolic_ref_without_oid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An unborn branch in a repository without commits has a symbolic ref but no commit OID."""
     repo = TemporaryGitRepository.init(tmp_path / "unborn", with_initial_commit=False)
+    calls: list[tuple[str, ...]] = []
+    real_run = process.subprocess.run
+
+    def recording_run(*args: object, **kwargs: object) -> object:
+        calls.append(args[0])
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(process.subprocess, "run", recording_run)
+
     observation = context.observe_checkout(repo.root)
+
     assert observation.detached is False
     assert observation.symbolic_ref == f"refs/heads/{DEFAULT_BRANCH}"
     assert observation.head_oid is None
+    assert ("git", "symbolic-ref", "--quiet", "HEAD") in calls
 
 
 def test_invalid_repository_directory_is_rejected(tmp_path: Path) -> None:
@@ -106,16 +120,20 @@ def test_observe_checkout_forwards_timeout_bound(
     git_repo: TemporaryGitRepository,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Observation forwards the caller-supplied timeout bound to every git subprocess."""
-    captured: dict[str, float | None] = {}
+    """Observation forwards the timeout bound and batches head state into one call."""
+    calls: list[tuple[tuple[str, ...], object]] = []
     real_run = process.subprocess.run
 
     def recording_run(*args: object, **kwargs: object) -> object:
-        captured["timeout"] = kwargs.get("timeout")
+        calls.append((args[0], kwargs.get("timeout")))
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr(process.subprocess, "run", recording_run)
 
     context.observe_checkout(git_repo.root, timeout=7.5)
 
-    assert captured["timeout"] == 7.5
+    assert calls
+    assert all(timeout == 7.5 for _, timeout in calls)
+    head_calls = [cmd for cmd, _ in calls if "--symbolic-full-name" in cmd]
+    assert head_calls == [("git", "rev-parse", "HEAD", "--symbolic-full-name", "HEAD")]
+    assert not [cmd for cmd, _ in calls if "symbolic-ref" in cmd]

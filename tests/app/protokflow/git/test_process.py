@@ -94,3 +94,15 @@ def test_ambient_routing_variables_do_not_redirect_children(
     )
 
     assert Path(result.stdout.strip()) == git_repo.root.resolve()
+
+
+def test_ambient_config_parameters_do_not_inject_config(
+    git_repo: TemporaryGitRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inherited GIT_CONFIG_PARAMETERS cannot inject config into git children."""
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'user.name=Injected Name'")
+
+    result = process.run_git(("config", "user.name"), cwd=git_repo.root, check=False)
+
+    assert "Injected" not in result.stdout

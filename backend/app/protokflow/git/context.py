@@ -1,8 +1,8 @@
 """Git checkout observation adapter.
 
-Inspects a worktree's checkout state in a single pass, capturing root directories,
-symbolic branch reference, HEAD commit OID, detached HEAD status, and deterministic
-repository and worktree identifiers.
+Resolves a worktree's checkout state as one observation operation, capturing root
+directories, symbolic branch reference, HEAD commit OID, detached HEAD status,
+and deterministic repository and worktree identifiers.
 """
 
 from __future__ import annotations
@@ -114,7 +114,7 @@ def _head_state(
     )
     if combined.returncode == 0:
         oid, _, symbolic = combined.stdout.partition("\n")
-        symbolic_ref = symbolic.strip()
+        symbolic_ref = symbolic[:-1] if symbolic.endswith("\n") else symbolic
         return (None if symbolic_ref == "HEAD" else symbolic_ref), oid.strip()
     fallback = process.run_git(
         ("symbolic-ref", "--quiet", "HEAD"),
@@ -124,10 +124,11 @@ def _head_state(
         timeout=timeout,
     )
     if fallback.returncode == 0:
-        return fallback.stdout.strip(), None
+        ref = fallback.stdout
+        return (ref[:-1] if ref.endswith("\n") else ref), None
     raise GitCommandError(
-        combined.command,
-        returncode=combined.returncode,
-        stdout=combined.stdout,
-        stderr=combined.stderr,
+        fallback.command,
+        returncode=fallback.returncode,
+        stdout=fallback.stdout,
+        stderr=fallback.stderr,
     )

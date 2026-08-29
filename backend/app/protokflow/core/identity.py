@@ -93,5 +93,11 @@ def _is_case_insensitive(directory: Path) -> bool:
         return False
     finally:
         if created:
-            marker.unlink(missing_ok=True)
-        twin.unlink(missing_ok=True)
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            twin.unlink(missing_ok=True)
+        except OSError:
+            pass

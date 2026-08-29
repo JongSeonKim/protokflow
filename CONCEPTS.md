@@ -65,7 +65,7 @@ Runtime startup resolves this state from durable operation identity, target dige
 A freshness status for a valid committed canonical generation when the Runtime knows a newer file state is waiting for validation or cannot be committed because the current canonical source is invalid or missing.
 
 ### Checkout Observation
-The single-pass inspection of a worktree's checkout state: worktree root, common and per-worktree Git directories, symbolic ref, HEAD OID, detached flag, and the path-derived repository and worktree identifiers.
+The read-only inspection of a worktree's checkout state: worktree root, common and per-worktree Git directories, symbolic ref, HEAD OID, detached flag, and the path-derived repository and worktree identifiers.
 
 Observation runs read-only git commands under a sanitized child environment and never locks or refreshes the user's index.
 

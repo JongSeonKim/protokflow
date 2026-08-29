@@ -22,7 +22,7 @@ TESTING_HOOKS = {"_set_engine_for_testing", "_set_factory_for_testing"}
 # Fixtures that manage test database isolation and must not be redefined locally.
 ISOLATION_FIXTURE_NAMES = {
     "_test_database_guard",
-    "test_git_repo",
+    "git_repo",
     "test_db",
     "test_engine",
 }

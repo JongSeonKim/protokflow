@@ -131,7 +131,9 @@ def create_commit(
 ) -> str:
     """Create a commit object pointing to the specified tree and parent commit, returning its object ID."""
     author_name, author_email = _resolve_identity(
-        repo.worktree_root, git_executable=repo.git_executable
+        repo.worktree_root,
+        git_executable=repo.git_executable,
+        timeout=repo.timeout,
     )
     result = process.run_git(
         ("commit-tree", tree, "-p", parent, "-m", message),
@@ -148,10 +150,19 @@ def create_commit(
     return result.stdout.strip()
 
 
-def _resolve_identity(worktree_root: Path, *, git_executable: str) -> tuple[str, str]:
+def _resolve_identity(
+    worktree_root: Path,
+    *,
+    git_executable: str,
+    timeout: float | None,
+) -> tuple[str, str]:
     """Resolve author/committer identity from git config with a fixed runtime fallback."""
-    name = _config_value(worktree_root, "user.name", git_executable=git_executable)
-    email = _config_value(worktree_root, "user.email", git_executable=git_executable)
+    name = _config_value(
+        worktree_root, "user.name", git_executable=git_executable, timeout=timeout
+    )
+    email = _config_value(
+        worktree_root, "user.email", git_executable=git_executable, timeout=timeout
+    )
     return (
         name or RUNTIME_IDENTITY_NAME,
         email or RUNTIME_IDENTITY_EMAIL,
@@ -163,6 +174,7 @@ def _config_value(
     key: str,
     *,
     git_executable: str,
+    timeout: float | None,
 ) -> str | None:
     """Return the repository's local value for a git config key, or None when unset.
 
@@ -175,6 +187,7 @@ def _config_value(
         cwd=worktree_root,
         check=False,
         git_executable=git_executable,
+        timeout=timeout,
     )
     if result.returncode != 0:
         return None
@@ -200,7 +213,10 @@ def update_index_entry(
         git_executable=repo.git_executable,
         timeout=repo.timeout,
     )
-    real_index = Path(git_dir.stdout.strip()) / "index"
+    raw_dir = git_dir.stdout
+    if raw_dir.endswith("\n"):
+        raw_dir = raw_dir[:-1]
+    real_index = Path(raw_dir) / "index"
     process.run_git(
         _cacheinfo_vector(mode=mode, oid=oid, path=path),
         cwd=repo.worktree_root,
@@ -260,7 +276,11 @@ def update_ref_conditionally(
 
 
 def _current_ref_oid(repo: GitRepo, ref: str) -> str | None:
-    """Return the ref's current OID, or None when the ref does not resolve."""
+    """Return the ref's current OID, or None when the ref does not resolve.
+
+    A failed probe (anything other than a clean resolution or a quiet
+    missing-ref answer) raises instead of masquerading as an absent ref.
+    """
     probe = process.run_git(
         ("rev-parse", "--verify", "--quiet", ref),
         cwd=repo.worktree_root,
@@ -268,4 +288,13 @@ def _current_ref_oid(repo: GitRepo, ref: str) -> str | None:
         git_executable=repo.git_executable,
         timeout=repo.timeout,
     )
-    return probe.stdout.strip() if probe.returncode == 0 else None
+    if probe.returncode == 0:
+        return probe.stdout.strip()
+    if probe.returncode == 1:
+        return None
+    raise GitCommandError(
+        probe.command,
+        returncode=probe.returncode,
+        stdout=probe.stdout,
+        stderr=probe.stderr,
+    )

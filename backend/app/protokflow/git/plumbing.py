@@ -1,10 +1,10 @@
-"""Isolated-index commit and conditional ref plumbing (KTD4).
+"""Low-level Git plumbing operations using isolated temporary indexes and conditional ref updates.
 
-Export-grade Git mutations avoid porcelain commands: blobs are written with
-hash-object, trees are composed against a temporary index, commits are
-created with commit-tree, and refs move only when an expected OID still
-matches (update-ref compare-and-swap). The user's real index and staged
-state are never touched by temporary-index work (R19).
+Performs repository mutations exclusively through plumbing commands to guarantee
+isolation: blobs are written with hash-object, trees are composed inside a temporary
+index file, commits are generated with commit-tree, and references are updated
+atomically via compare-and-swap (update-ref). The working tree and staged index
+remain entirely untouched.
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ from backend.app.protokflow.git import process
 
 @dataclass(frozen=True, slots=True)
 class RefUpdateResult:
-    """Outcome of an expected-OID conditional ref update (R19).
+    """Outcome of a conditional reference update (compare-and-swap).
 
-    accepted is False when the ref moved concurrently; stderr and cause
-    preserve the original failure evidence so callers can separate
-    retryable concurrency conflicts from permanent failures.
+    accepted is False when the reference moved concurrently. stderr and cause
+    preserve the underlying failure details so callers can distinguish retryable
+    concurrency conflicts from permanent errors.
     """
 
     ref: str
@@ -38,7 +38,7 @@ class RefUpdateResult:
 
 
 class IsolatedIndex:
-    """Handle over one temporary GIT_INDEX_FILE inside a single scope."""
+    """Manages operations within an isolated temporary GIT_INDEX_FILE."""
 
     def __init__(self, worktree_root: Path, path: Path, git_executable: str) -> None:
         self._worktree_root = worktree_root
@@ -46,15 +46,15 @@ class IsolatedIndex:
         self._git_executable = git_executable
 
     def read_tree(self, treeish: str) -> None:
-        """Load a tree-ish into the temporary index."""
+        """Populate the temporary index from an existing tree-ish object."""
         self._run("read-tree", treeish)
 
     def update_entry(self, *, mode: str, oid: str, path: str) -> None:
-        """Replace a single index entry through --cacheinfo."""
+        """Update or insert a single entry into the temporary index via --cacheinfo."""
         self._run("update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}")
 
     def write_tree(self) -> str:
-        """Materialize the temporary index into a tree object."""
+        """Write the temporary index to the object database and return the resulting tree OID."""
         return self._run("write-tree").stdout.strip()
 
     def _run(self, *args: str) -> process.GitCommandResult:
@@ -72,11 +72,11 @@ def isolated_index(
     *,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
 ) -> Iterator[IsolatedIndex]:
-    """Isolate temporary-index commands behind an explicit GIT_INDEX_FILE.
+    """Context manager providing an isolated temporary index file for staging Git operations.
 
-    Every command in the scope explicitly sets GIT_INDEX_FILE, so an
-    inherited override cannot leak in or out. The temporary file is removed
-    on every exit path, including exceptions (KTD4).
+    Ensures every command within the scope uses an explicit temporary GIT_INDEX_FILE,
+    preventing unintended leaks to or from inherited environment variables. The temporary
+    index file is guaranteed to be deleted on exit, including during unhandled exceptions.
     """
     descriptor, raw_path = tempfile.mkstemp(prefix="protokflow-index-", suffix=".tmp")
     os.close(descriptor)
@@ -93,7 +93,7 @@ def create_blob(
     *,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
 ) -> str:
-    """Write content as a blob object and return its OID (R19)."""
+    """Write raw bytes to the Git object database as a blob and return its object ID."""
     result = process.run_git(
         ("hash-object", "-w", "--stdin"),
         cwd=worktree_root,
@@ -111,7 +111,7 @@ def create_commit(
     message: str,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
 ) -> str:
-    """Create a commit object on top of parent and return its OID (KTD4)."""
+    """Create a commit object pointing to the specified tree and parent commit, returning its object ID."""
     result = process.run_git(
         ("commit-tree", tree, "-p", parent, "-m", message),
         cwd=worktree_root,
@@ -128,11 +128,10 @@ def update_index_entry(
     path: str,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
 ) -> None:
-    """Replace one entry in the repository's real index (R19).
+    """Update a single entry in the repository's real index file via update-index --cacheinfo.
 
-    The update runs against the explicit real index path so an inherited
-    GIT_INDEX_FILE cannot redirect it, and git's index lock serializes
-    concurrent writers.
+    Directs updates explicitly to the repository's index path so that any inherited
+    GIT_INDEX_FILE environment variable does not misdirect the modification.
     """
     git_dir = process.run_git(
         ("rev-parse", "--path-format=absolute", "--absolute-git-dir"),
@@ -158,11 +157,11 @@ def update_ref_conditionally(
     reason: str,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
 ) -> RefUpdateResult:
-    """Move ref to new_oid only while it still equals expected_oid.
+    """Advance ref to new_oid only if it currently points to expected_oid.
 
-    Uses the compare-and-swap form of update-ref. A stale expectation is
-    reported as a dedicated RefUpdateResult instead of a command error so
-    callers can identify retryable concurrency conflicts (R19, KTD4).
+    Uses the compare-and-swap form of update-ref. If the reference moved concurrently,
+    returns a RefUpdateResult with accepted=False rather than raising an exception,
+    allowing callers to detect and handle optimistic concurrency conflicts.
     """
     result = process.run_git(
         ("update-ref", "-m", reason, "--", ref, new_oid, expected_oid),

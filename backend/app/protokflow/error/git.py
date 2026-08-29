@@ -1,4 +1,4 @@
-"""Exception classes for Git adapter subprocess and plumbing failures."""
+"""Exception hierarchy for Git adapter subprocess execution and plumbing failures."""
 
 from __future__ import annotations
 
@@ -7,23 +7,22 @@ from collections.abc import Sequence
 
 
 class GitError(ValueError):
-    """Base exception for Git adapter failures."""
+    """Base exception for all Git adapter failures."""
 
 
 class GitBinaryMissingError(GitError):
-    """Raised when the git executable cannot be found or executed.
+    """Raised when the git executable cannot be located or executed.
 
-    The original OSError is preserved as __cause__ so callers can inspect
-    the underlying errno while higher layers only catch GitError.
+    Preserves the underlying OSError as __cause__ so callers can inspect
+    specific operating system error codes while catching GitError.
     """
 
 
 class GitCommandError(GitError):
-    """Raised when a git subprocess exits with a non-zero status.
+    """Raised when a git subprocess terminates with a non-zero exit code.
 
-    Preserves the exact argument vector, exit status, and captured streams
-    so callers can distinguish retryable concurrency conflicts from
-    permanent command failures.
+    Preserves the argument vector, exit code, and captured stdout/stderr streams
+    so callers can diagnose failures or differentiate retryable conflicts.
     """
 
     def __init__(
@@ -46,4 +45,4 @@ class GitCommandError(GitError):
 
 
 class GitWorktreeInvalidError(GitError):
-    """Raised when the target directory is not a usable Git working tree."""
+    """Raised when the target directory is not a valid or accessible Git working tree."""

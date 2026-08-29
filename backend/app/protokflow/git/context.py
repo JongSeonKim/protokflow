@@ -1,8 +1,8 @@
-"""Git checkout observation adapter (U1).
+"""Git checkout observation adapter.
 
-Returns a single observation of a worktree's checkout state: root paths,
-full symbolic ref, HEAD OID, and detached status, plus the normalized
-identities from the pure core identity module (R25, R26).
+Inspects a worktree's checkout state in a single pass, capturing root directories,
+symbolic branch reference, HEAD commit OID, detached HEAD status, and deterministic
+repository and worktree identifiers.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from backend.app.protokflow.git import process
 
 @dataclass(frozen=True, slots=True)
 class CheckoutContext:
-    """Single observation of a Git worktree checkout state (R26)."""
+    """Immutable snapshot of a Git worktree's checkout state and path identities."""
 
     worktree_root: Path
     git_common_dir: Path
@@ -34,7 +34,7 @@ def observe_checkout(
     *,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
 ) -> CheckoutContext:
-    """Observe the checkout state of the worktree containing path."""
+    """Inspect and return the current checkout state of the Git worktree containing path."""
     try:
         toplevel, common_dir, git_dir = _worktree_paths(
             path, git_executable=git_executable
@@ -61,7 +61,7 @@ def observe_checkout(
     if head.returncode == 0:
         head_oid: str | None = head.stdout.strip()
     elif head.returncode == 1:
-        head_oid = None  # unborn branch: ref identity exists, no commit yet
+        head_oid = None  # Unborn branch: symbolic reference exists, but no commits yet
     else:
         raise GitCommandError(
             head.command,
@@ -87,7 +87,7 @@ def _worktree_paths(
     *,
     git_executable: str,
 ) -> tuple[Path, Path, Path]:
-    """Resolve toplevel, common dir, and git dir with one rev-parse call."""
+    """Resolve the worktree root, common git directory, and worktree git directory in a single rev-parse call."""
     result = process.run_git(
         (
             "rev-parse",

@@ -1,4 +1,4 @@
-"""Tests for isolated-index commit and conditional ref plumbing (KTD4)."""
+"""Tests for isolated-index commit creation and conditional reference plumbing."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def _modified_design_md() -> str:
 
 
 def test_create_blob_round_trips_content(git_repo: TemporaryGitRepository) -> None:
-    """Blob creation stores the exact bytes under the returned OID."""
+    """Creating a blob stores the exact binary content under the returned object ID."""
     content = b"alpha\nbeta"
     oid = plumbing.create_blob(git_repo.root, content)
     result = git_repo.run("cat-file", "blob", oid)
@@ -24,11 +24,11 @@ def test_create_blob_round_trips_content(git_repo: TemporaryGitRepository) -> No
 def test_isolated_index_commit_includes_only_design_md_change(
     git_repo: TemporaryGitRepository,
 ) -> None:
-    """The isolated commit excludes staged and working-tree noise (R19)."""
+    """Committing via an isolated index excludes existing staged changes and unstaged working tree edits."""
     git_repo.write_file("notes.txt", "staged work\n")
     git_repo.stage("notes.txt")
     modified = _modified_design_md()
-    git_repo.write_file("DESIGN.md", modified)  # unstaged
+    git_repo.write_file("DESIGN.md", modified)  # Unstaged working tree change
 
     parent = git_repo.head_oid()
     new_blob = plumbing.create_blob(git_repo.root, modified.encode())
@@ -45,20 +45,24 @@ def test_isolated_index_commit_includes_only_design_md_change(
 
     new_entries = git_repo.tree_entries(tree)
     parent_entries = git_repo.tree_entries(parent)
-    assert set(new_entries) == set(parent_entries)  # staged notes.txt excluded
+    assert set(new_entries) == set(
+        parent_entries
+    )  # Staged notes.txt is excluded from the new commit tree
     assert new_entries["DESIGN.md"] == ("100644", new_blob)
     assert parent_entries["DESIGN.md"] != ("100644", new_blob)
 
     commit_text = git_repo.commit_object(commit)
     assert f"tree {tree}" in commit_text
     assert f"parent {parent}" in commit_text
-    assert git_repo.head_oid() == parent  # ref untouched by commit creation
+    assert (
+        git_repo.head_oid() == parent
+    )  # HEAD reference remains untouched by commit-tree creation
 
 
 def test_conditional_ref_update_accepts_matching_expected_oid(
     git_repo: TemporaryGitRepository,
 ) -> None:
-    """A matching expectation moves the ref to the new OID (R19)."""
+    """Advancing a ref succeeds when the expected current OID matches."""
     base = git_repo.head_oid()
     target = plumbing.create_commit(
         git_repo.root,
@@ -82,7 +86,7 @@ def test_conditional_ref_update_accepts_matching_expected_oid(
 def test_conditional_ref_update_rejects_stale_expected_oid(
     git_repo: TemporaryGitRepository,
 ) -> None:
-    """A concurrent ref move is a dedicated rejection preserving evidence."""
+    """Advancing a ref is rejected with conflict details when the current OID has moved concurrently."""
     base = git_repo.head_oid()
     tree = git_repo.head_tree()
     target = plumbing.create_commit(
@@ -91,7 +95,9 @@ def test_conditional_ref_update_rejects_stale_expected_oid(
     rival = plumbing.create_commit(
         git_repo.root, tree=tree, parent=base, message="rival"
     )
-    git_repo.set_ref("refs/heads/main", rival)  # simulates the concurrent writer
+    git_repo.set_ref(
+        "refs/heads/main", rival
+    )  # Simulate a concurrent writer updating the branch
 
     result = plumbing.update_ref_conditionally(
         git_repo.root,
@@ -105,14 +111,16 @@ def test_conditional_ref_update_rejects_stale_expected_oid(
     assert result.current_oid == rival
     assert result.stderr
     assert isinstance(result.cause, GitCommandError)
-    assert git_repo.head_oid() == rival  # the ref keeps the concurrent value
+    assert (
+        git_repo.head_oid() == rival
+    )  # Branch ref retains the concurrent update value
 
 
 def test_update_index_entry_replaces_single_real_index_path(
     git_repo: TemporaryGitRepository,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only the named entry changes, despite an inherited index override."""
+    """Updating a single entry modifies only the target path in the real index, ignoring environment overrides."""
     monkeypatch.setenv("GIT_INDEX_FILE", str(git_repo.root / "bogus-index"))
     before = git_repo.index_entries()
 
@@ -137,7 +145,7 @@ def test_isolated_index_ignores_inherited_env_and_cleans_up(
     git_repo: TemporaryGitRepository,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Scope commands use the temp index and the file is removed afterwards."""
+    """Commands inside isolated_index use the temporary index file, which is deleted upon exit."""
     bogus = git_repo.root / "bogus-index"
     monkeypatch.setenv("GIT_INDEX_FILE", str(bogus))
 
@@ -146,13 +154,13 @@ def test_isolated_index_ignores_inherited_env_and_cleans_up(
         assert index.path.exists()
         index.read_tree(git_repo.head_oid())
     assert not index.path.exists()
-    assert not bogus.exists()  # the inherited override was never touched
+    assert not bogus.exists()  # Inherited GIT_INDEX_FILE path was never touched
 
 
 def test_isolated_index_cleans_up_on_exception(
     git_repo: TemporaryGitRepository,
 ) -> None:
-    """The temp index file is removed even when the scope raises."""
+    """Temporary index file is guaranteed to be deleted even when an exception is raised within the context."""
     with pytest.raises(RuntimeError), plumbing.isolated_index(git_repo.root) as index:
         raise RuntimeError("boom")
     assert not index.path.exists()

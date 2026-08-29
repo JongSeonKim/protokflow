@@ -1,8 +1,8 @@
-"""Subprocess wrapper around the git binary (KTD3).
+"""Subprocess execution wrapper for the Git command-line interface.
 
-All Git observation and plumbing flows through run_git. Observation commands
-must not refresh or lock the index as a side effect, so every child process
-runs with GIT_OPTIONAL_LOCKS=0 regardless of the command mode.
+Centralizes all Git CLI interactions. Sets GIT_OPTIONAL_LOCKS=0 on all child
+processes to prevent read-only observation commands from acquiring index locks
+or unintentionally refreshing filesystem stat caches.
 """
 
 from __future__ import annotations
@@ -63,8 +63,8 @@ def run_git(
             check=False,
         )
     except FileNotFoundError as exc:
-        # A missing working directory is a caller contract violation, not a
-        # missing binary; surface it unchanged for the caller to classify.
+        # Re-raise FileNotFoundError when the working directory does not exist,
+        # distinguishing an invalid target path from a missing git executable.
         if not Path(cwd).exists():
             raise
         raise GitBinaryMissingError(

@@ -1,4 +1,4 @@
-"""Tests for the git subprocess wrapper (KTD3)."""
+"""Tests for the Git subprocess execution wrapper."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from tests.fixtures.git import TemporaryGitRepository
 
 
 def test_missing_git_binary_raises_domain_exception(tmp_path: Path) -> None:
-    """A missing git executable becomes a domain error preserving the cause."""
+    """A missing git executable raises a GitBinaryMissingError preserving the underlying cause."""
     with pytest.raises(GitBinaryMissingError) as excinfo:
         process.run_git(
             ("status", "--short"),
@@ -25,7 +25,7 @@ def test_missing_git_binary_raises_domain_exception(tmp_path: Path) -> None:
 def test_failing_command_preserves_streams_and_status(
     git_repo: TemporaryGitRepository,
 ) -> None:
-    """Non-zero exits raise a domain error carrying stderr and the argv."""
+    """Non-zero exit codes raise a GitCommandError preserving stderr, stdout, and argument vector."""
     with pytest.raises(GitCommandError) as excinfo:
         process.run_git(
             ("show", "definitely-not-a-ref"),
@@ -41,7 +41,7 @@ def test_env_overrides_reach_the_child_and_unset_removes_variables(
     git_repo: TemporaryGitRepository,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Inherited variables are forwarded; None values remove them."""
+    """Forwarded environment variables reach the subprocess and None values remove inherited variables."""
     monkeypatch.setenv("GIT_TRACE", "1")
     traced = process.run_git(("rev-parse", "HEAD"), cwd=git_repo.root)
     assert "trace:" in traced.stderr.lower()

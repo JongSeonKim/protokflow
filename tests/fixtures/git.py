@@ -104,10 +104,10 @@ class TemporaryGitRepository:
         return entries
 
     def index_entries(self) -> dict[str, tuple[str, str]]:
-        """List the real index as a mapping of path to (mode, oid).
+        """List entries in the repository's real index as a mapping of path to (mode, oid).
 
-        Any inherited GIT_INDEX_FILE override is removed so the helper always
-        reports the repository's real index, mirroring update_index_entry.
+        Explicitly unsets GIT_INDEX_FILE so this helper always inspects the
+        repository's real index, mirroring update_index_entry.
         """
         result = self.run("ls-files", "-s", env={"GIT_INDEX_FILE": None})
         entries: dict[str, tuple[str, str]] = {}

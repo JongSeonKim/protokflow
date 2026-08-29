@@ -1,4 +1,4 @@
-"""Tests for deterministic path-based repository and worktree identity (KTD7)."""
+"""Tests for deterministic path-based repository and worktree identity generation."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _common_dir(repo: TemporaryGitRepository) -> Path:
 
 
 def test_worktree_id_is_stable_across_symlink_paths(tmp_path: Path) -> None:
-    """Symlinked access to the same root yields the same worktree_id (R25)."""
+    """Accessing the same root via symlinks produces an identical worktree_id."""
     real = tmp_path / "worktree"
     real.mkdir()
     link = tmp_path / "link"
@@ -27,7 +27,7 @@ def test_worktree_id_is_stable_across_symlink_paths(tmp_path: Path) -> None:
 def test_sibling_worktrees_share_repository_identity(
     git_repo: TemporaryGitRepository,
 ) -> None:
-    """Siblings differ per worktree but agree on the repository (R25)."""
+    """Linked sibling worktrees have distinct worktree IDs but share the same repository ID."""
     sibling = git_repo.add_worktree("sibling")
     assert identity.worktree_id(git_repo.root) != identity.worktree_id(sibling.root)
     assert identity.repository_id(_common_dir(git_repo)) == identity.repository_id(
@@ -36,9 +36,9 @@ def test_sibling_worktrees_share_repository_identity(
 
 
 def test_case_folding_applies_only_when_case_insensitive(tmp_path: Path) -> None:
-    """Case-fold on insensitive paths, preserve case on sensitive ones (KTD7)."""
+    """Folds case on case-insensitive filesystems while preserving case on sensitive ones."""
     primary = tmp_path / "Worktree"
-    secondary = tmp_path / "worktree"  # case-only spelling difference
+    secondary = tmp_path / "worktree"  # Path differing only by casing
     assert identity.worktree_id(primary, case_insensitive=True) == identity.worktree_id(
         secondary, case_insensitive=True
     )
@@ -48,20 +48,22 @@ def test_case_folding_applies_only_when_case_insensitive(tmp_path: Path) -> None
 
 
 def test_auto_detection_matches_filesystem_behavior(tmp_path: Path) -> None:
-    """Automatic case handling agrees with what the filesystem resolves."""
+    """Automatic case sensitivity detection matches the underlying filesystem behavior."""
     directory = tmp_path / "ProbeDir"
     directory.mkdir()
     swapped = directory.with_name(directory.name.swapcase())
-    insensitive = swapped.exists()  # possible only when the FS folds case
+    insensitive = swapped.exists()  # True only on case-insensitive filesystems
     same_id = identity.worktree_id(directory) == identity.worktree_id(swapped)
     assert same_id is insensitive
 
 
 def test_unicode_normalization_unifies_equivalent_spellings(tmp_path: Path) -> None:
-    """NFC normalization folds equivalent Unicode spellings together (KTD7)."""
+    """Unicode NFC normalization produces identical IDs for equivalent decomposed/composed forms."""
     composed = tmp_path / unicodedata.normalize("NFC", "cafe-worktree-\u00e9")
     decomposed = tmp_path / unicodedata.normalize("NFD", "cafe-worktree-\u00e9")
-    assert composed != decomposed  # the spellings genuinely differ before folding
+    assert (
+        composed != decomposed
+    )  # Spellings differ at the byte level before NFC normalization
     assert identity.worktree_id(
         composed, case_insensitive=False
     ) == identity.worktree_id(decomposed, case_insensitive=False)

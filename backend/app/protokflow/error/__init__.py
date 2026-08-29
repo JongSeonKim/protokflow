@@ -1,1 +1,1 @@
-"""Domain exceptions, one module per slice (design_md, storage, git)."""
+"""Domain exceptions organized by feature slice (design_md, storage, git)."""

@@ -1,1 +1,1 @@
-"""Git adapter package: subprocess observation and plumbing (KTD3, KTD4)."""
+"""Git adapter package providing subprocess execution, checkout observation, and plumbing operations."""

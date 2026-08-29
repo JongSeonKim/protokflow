@@ -1,9 +1,9 @@
-"""Deterministic, database-independent path identity (KTD7).
+"""Deterministic, database-independent path identity.
 
 Derives stable repository_id and worktree_id values from normalized
-filesystem paths so clients can compute the same identifiers as the runtime
-without contacting the server (R25). Pure Python only: no SQLAlchemy or
-FastAPI imports.
+filesystem paths so clients can compute identical identifiers locally
+without contacting the server. Pure Python implementation with no
+database or framework dependencies.
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ def normalize_path(
     *,
     case_insensitive: bool | None = None,
 ) -> str:
-    """Resolve symlinks and normalize a path into its stable textual form.
+    """Resolve symlinks and normalize a path into its canonical textual form.
 
-    Symlinks are resolved, the result is Unicode NFC-normalized, and case is
-    folded only when case_insensitive is true; None probes the host
-    filesystem for case sensitivity (KTD7).
+    Resolves symbolic links, applies Unicode NFC normalization, and folds
+    case on case-insensitive filesystems. Passing None dynamically probes
+    the host filesystem for case sensitivity.
     """
     resolved = Path(path).resolve()
     normalized = unicodedata.normalize("NFC", str(resolved))
@@ -41,7 +41,7 @@ def worktree_id(
     *,
     case_insensitive: bool | None = None,
 ) -> str:
-    """Return the stable identity of a worktree root (R25)."""
+    """Return the stable SHA-256 identifier for a Git worktree root path."""
     return _stable_id(WORKTREE_ID_DOMAIN, path, case_insensitive=case_insensitive)
 
 
@@ -50,7 +50,7 @@ def repository_id(
     *,
     case_insensitive: bool | None = None,
 ) -> str:
-    """Return the stable identity of a Git common directory (R25)."""
+    """Return the stable SHA-256 identifier for a Git common directory path."""
     return _stable_id(REPOSITORY_ID_DOMAIN, path, case_insensitive=case_insensitive)
 
 
@@ -67,7 +67,7 @@ def _stable_id(
 
 
 def _is_case_insensitive(directory: Path) -> bool:
-    """Probe whether the filesystem treats case-only spellings as equal."""
+    """Probe whether the host filesystem treats case-variant paths as identical."""
     swapped = directory.name.swapcase()
     if swapped == directory.name:
         return False

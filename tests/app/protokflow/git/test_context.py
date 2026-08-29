@@ -10,7 +10,7 @@ from backend.app.protokflow.core import identity
 from backend.app.protokflow.error.git import GitError, GitWorktreeInvalidError
 from backend.app.protokflow.git import context
 from backend.app.protokflow.git import process
-from tests.fixtures.git import DEFAULT_BRANCH, TemporaryGitRepository
+from tests.fixtures.git import DEFAULT_BRANCH, DESIGN_MD_CONTENT, TemporaryGitRepository
 
 
 def test_attached_head_returns_full_symbolic_ref_and_oid(
@@ -50,6 +50,21 @@ def test_linked_worktree_splits_common_and_worktree_git_dirs(
     # Ensure bundled context identities match direct pure-core computation.
     assert main.worktree_id == identity.worktree_id(main.worktree_root)
     assert main.repository_id == identity.repository_id(main.git_common_dir)
+
+
+def test_identity_unchanged_by_new_head_on_same_branch(
+    git_repo: TemporaryGitRepository,
+) -> None:
+    """A new HEAD commit on the same symbolic ref leaves checkout identity unchanged."""
+    before = context.observe_checkout(git_repo.root)
+    git_repo.write_file("DESIGN.md", DESIGN_MD_CONTENT.replace("#3366ff", "#ff3366"))
+    git_repo.commit_all("second commit")
+    after = context.observe_checkout(git_repo.root)
+
+    assert after.head_oid != before.head_oid
+    assert after.symbolic_ref == before.symbolic_ref
+    assert after.repository_id == before.repository_id
+    assert after.worktree_id == before.worktree_id
 
 
 def test_unborn_head_observes_symbolic_ref_without_oid(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ TESTING_HOOKS = {"_set_engine_for_testing", "_set_factory_for_testing"}
 # Fixtures that manage test database isolation and must not be redefined locally.
 ISOLATION_FIXTURE_NAMES = {
     "_test_database_guard",
+    "test_git_repo",
     "test_db",
     "test_engine",
 }
@@ -29,6 +30,7 @@ ISOLATION_FIXTURE_NAMES = {
 # Modules explicitly allowed to invoke testing hooks or define harness fixtures.
 ALLOWED_MODULES = {
     (TESTS_DIR / "fixtures" / "db.py").resolve(),
+    (TESTS_DIR / "fixtures" / "git.py").resolve(),
     (TESTS_DIR / "database" / "test_engine_boundary.py").resolve(),
 }
 

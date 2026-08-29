@@ -23,14 +23,17 @@ def test_create_blob_round_trips_content(git_repo: TemporaryGitRepository) -> No
 
 def test_isolated_index_commit_includes_only_design_md_change(
     git_repo: TemporaryGitRepository,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Committing via an isolated index excludes existing staged changes and unstaged working tree edits."""
+    monkeypatch.delenv("GIT_INDEX_FILE", raising=False)
     git_repo.write_file("notes.txt", "staged work\n")
     git_repo.stage("notes.txt")
     modified = _modified_design_md()
     git_repo.write_file("DESIGN.md", modified)  # Unstaged working tree change
 
     repo = plumbing.GitRepo(git_repo.root)
+    staged_index = git_repo.index_entries()
     parent = git_repo.head_oid()
     new_blob = plumbing.create_blob(repo, modified.encode())
     with plumbing.isolated_index(git_repo.root) as index:
@@ -55,6 +58,9 @@ def test_isolated_index_commit_includes_only_design_md_change(
     assert (
         git_repo.head_oid() == parent
     )  # HEAD reference remains untouched by commit-tree creation
+    assert (
+        git_repo.index_entries() == staged_index
+    )  # The user's staged notes.txt survives in the real index
 
 
 def test_create_commit_resolves_configured_identity(

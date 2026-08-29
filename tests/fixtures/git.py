@@ -9,6 +9,7 @@ xdist workers never share repositories.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,14 @@ if TYPE_CHECKING:
 DEFAULT_BRANCH = "main"
 
 DESIGN_MD_CONTENT = "---\ncolors:\n  primary: '#3366ff'\n---\n\n# Guide\n"
+
+# Host-independent git config: ambient global/system configuration, hooks
+# paths, and signing defaults must not leak into test repositories.
+SANITIZED_GIT_ENV: dict[str, str | None] = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
 
 
 class TemporaryGitRepository:
@@ -62,7 +71,7 @@ class TemporaryGitRepository:
             cwd=self.root,
             check=check,
             input_bytes=input_bytes,
-            env=env,
+            env={**SANITIZED_GIT_ENV, **(env or {})},
         )
 
     def git_stdout(self, *args: str) -> str:

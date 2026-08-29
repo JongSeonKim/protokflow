@@ -63,3 +63,23 @@ Runtime startup resolves this state from durable operation identity, target dige
 
 ### Stale
 A freshness status for a valid committed canonical generation when the Runtime knows a newer file state is waiting for validation or cannot be committed because the current canonical source is invalid or missing.
+
+### Checkout Identity
+The Git checkout the Repository Runtime treats as the current one: the full symbolic ref on an attached HEAD, or the commit OID on a detached HEAD.
+
+A new HEAD OID on the same symbolic ref does not change this identity.
+
+### Checkout Epoch
+A monotonically increasing number the Repository Runtime commits whenever Checkout Identity changes, regardless of whether the canonical file content changed.
+
+Candidate revisions record the epoch they were created under. A revision from an earlier epoch is never automatically revalidated, so returning to a previous branch does not make it exportable again.
+
+### Mutation Fence
+The per-worktree serialization boundary every canonical-dependent command passes through.
+
+On entry it drains pending watcher observations, waits for synchronization, and pins Checkout Identity, Checkout Epoch, canonical generation, and digest as the command's baseline. It revalidates the same baseline immediately before committing a database or Git result, and fails the command as a retryable checkout conflict on any mismatch.
+
+### Export Operation
+The durable record of one promotion of a candidate revision to a new canonical generation through a Git commit.
+
+It advances through committed phases — intent, commit created, ref updated, worktree reflected, finalized — so an interrupted runtime resolves it to exactly one of completed, conflict, or failed on restart. A matching file digest is never accepted as proof that the Git result landed.

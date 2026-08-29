@@ -113,7 +113,6 @@ def test_conditional_ref_update_accepts_matching_expected_oid(
         reason="test: advance",
     )
     assert result.accepted is True
-    assert result.cause is None
     assert result.current_oid == target
     assert git_repo.head_oid() == target
 
@@ -145,10 +144,46 @@ def test_conditional_ref_update_rejects_stale_expected_oid(
     assert result.accepted is False
     assert result.current_oid == rival
     assert result.stderr
-    assert isinstance(result.cause, GitCommandError)
     assert (
         git_repo.head_oid() == rival
     )  # Branch ref retains the concurrent update value
+
+
+def test_conditional_ref_update_rejects_concurrently_deleted_ref(
+    git_repo: TemporaryGitRepository,
+) -> None:
+    """A ref deleted between expectation and update is a rejected CAS, not a hard error."""
+    base = git_repo.head_oid()
+    target = plumbing.create_commit(
+        git_repo.root, tree=git_repo.head_tree(), parent=base, message="target"
+    )
+    git_repo.run("branch", "topic")
+    git_repo.run("update-ref", "-d", "refs/heads/topic")
+
+    result = plumbing.update_ref_conditionally(
+        git_repo.root,
+        ref="refs/heads/topic",
+        new_oid=target,
+        expected_oid=base,
+        reason="test: deleted",
+    )
+
+    assert result.accepted is False
+    assert result.current_oid is None
+
+
+def test_conditional_ref_update_raises_when_ref_unchanged(
+    git_repo: TemporaryGitRepository,
+) -> None:
+    """A non-zero exit with the ref still at the expected OID is a permanent failure."""
+    with pytest.raises(GitCommandError):
+        plumbing.update_ref_conditionally(
+            git_repo.root,
+            ref="refs/heads/main",
+            new_oid="definitely-not-an-oid",
+            expected_oid=git_repo.head_oid(),
+            reason="test: malformed",
+        )
 
 
 def test_update_index_entry_replaces_single_real_index_path(

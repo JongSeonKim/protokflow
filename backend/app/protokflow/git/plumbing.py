@@ -3,8 +3,9 @@
 Performs repository mutations exclusively through plumbing commands to guarantee
 isolation: blobs are written with hash-object, trees are composed inside a temporary
 index file, commits are generated with commit-tree, and references are updated
-atomically via compare-and-swap (update-ref). The working tree and staged index
-remain entirely untouched.
+atomically via compare-and-swap (update-ref). The working tree stays untouched;
+update_index_entry is the single deliberate writer of the repository's real
+index.
 """
 
 from __future__ import annotations
@@ -28,17 +29,18 @@ RUNTIME_IDENTITY_EMAIL = "runtime@protokflow.invalid"
 class RefUpdateResult:
     """Outcome of a conditional reference update (compare-and-swap).
 
-    accepted is False when the reference moved concurrently. stderr and cause
-    preserve the underlying failure details so callers can distinguish retryable
+    accepted is False when the reference is no longer at expected_oid (moved
+    concurrently or deleted). stderr preserves the underlying failure detail
+    and current_oid reports the ref's OID at classification time (None when
+    the ref does not resolve), so callers can distinguish retryable
     concurrency conflicts from permanent errors.
     """
 
     ref: str
     accepted: bool
     expected_oid: str
-    current_oid: str
+    current_oid: str | None
     stderr: str
-    cause: GitCommandError | None
 
 
 class IsolatedIndex:
@@ -209,9 +211,12 @@ def update_ref_conditionally(
 ) -> RefUpdateResult:
     """Advance ref to new_oid only if it currently points to expected_oid.
 
-    Uses the compare-and-swap form of update-ref. If the reference moved concurrently,
-    returns a RefUpdateResult with accepted=False rather than raising an exception,
-    allowing callers to detect and handle optimistic concurrency conflicts.
+    Uses the compare-and-swap form of update-ref. A non-zero exit is classified
+    by probing the ref's current OID instead of matching git's localized stderr
+    text: a current OID different from expected_oid (including a concurrently
+    deleted ref) is a rejected CAS returned as accepted=False, while a ref
+    still sitting at expected_oid indicates a permanent failure raised as
+    GitCommandError.
     """
     result = process.run_git(
         ("update-ref", "-m", reason, "--", ref, new_oid, expected_oid),
@@ -226,23 +231,21 @@ def update_ref_conditionally(
             expected_oid=expected_oid,
             current_oid=new_oid,
             stderr="",
-            cause=None,
         )
-    cause = GitCommandError(
+    current = _current_ref_oid(worktree_root, ref, git_executable=git_executable)
+    if current != expected_oid:
+        return RefUpdateResult(
+            ref=ref,
+            accepted=False,
+            expected_oid=expected_oid,
+            current_oid=current,
+            stderr=result.stderr,
+        )
+    raise GitCommandError(
         result.command,
         returncode=result.returncode,
         stdout=result.stdout,
         stderr=result.stderr,
-    )
-    if "but expected" not in result.stderr:
-        raise cause
-    return RefUpdateResult(
-        ref=ref,
-        accepted=False,
-        expected_oid=expected_oid,
-        current_oid=_current_ref_oid(worktree_root, ref, git_executable=git_executable),
-        stderr=result.stderr,
-        cause=cause,
     )
 
 
@@ -251,11 +254,12 @@ def _current_ref_oid(
     ref: str,
     *,
     git_executable: str,
-) -> str:
+) -> str | None:
+    """Return the ref's current OID, or None when the ref does not resolve."""
     probe = process.run_git(
         ("rev-parse", "--verify", "--quiet", ref),
         cwd=worktree_root,
         check=False,
         git_executable=git_executable,
     )
-    return probe.stdout.strip() if probe.returncode == 0 else ""
+    return probe.stdout.strip() if probe.returncode == 0 else None

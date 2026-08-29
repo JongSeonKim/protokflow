@@ -9,6 +9,7 @@ import pytest
 from backend.app.protokflow.core import identity
 from backend.app.protokflow.error.git import GitError, GitWorktreeInvalidError
 from backend.app.protokflow.git import context
+from backend.app.protokflow.git import process
 from tests.fixtures.git import DEFAULT_BRANCH, TemporaryGitRepository
 
 
@@ -68,3 +69,22 @@ def test_invalid_repository_directory_is_rejected(tmp_path: Path) -> None:
         context.observe_checkout(plain)
     assert isinstance(excinfo.value, GitError)
     assert excinfo.value.__cause__ is not None
+
+
+def test_observe_checkout_forwards_timeout_bound(
+    git_repo: TemporaryGitRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Observation forwards the caller-supplied timeout bound to every git subprocess."""
+    captured: dict[str, float | None] = {}
+    real_run = process.subprocess.run
+
+    def recording_run(*args: object, **kwargs: object) -> object:
+        captured["timeout"] = kwargs.get("timeout")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(process.subprocess, "run", recording_run)
+
+    context.observe_checkout(git_repo.root, timeout=7.5)
+
+    assert captured["timeout"] == 7.5

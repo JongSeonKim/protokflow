@@ -44,5 +44,20 @@ class GitCommandError(GitError):
         )
 
 
+class GitTimeoutError(GitError):
+    """Raised when a git subprocess exceeds its allowed wall-clock time.
+
+    Preserves the argument vector and the configured timeout so callers can
+    log the stalled command or retry with a larger bound.
+    """
+
+    def __init__(self, command: Sequence[str], *, timeout: float) -> None:
+        self.command = tuple(command)
+        self.timeout = timeout
+        super().__init__(
+            "git " + shlex.join(self.command) + f" timed out after {timeout} seconds"
+        )
+
+
 class GitWorktreeInvalidError(GitError):
     """Raised when the target directory is not a valid or accessible Git working tree."""

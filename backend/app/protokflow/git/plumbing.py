@@ -46,10 +46,17 @@ class RefUpdateResult:
 class IsolatedIndex:
     """Manages operations within an isolated temporary GIT_INDEX_FILE."""
 
-    def __init__(self, worktree_root: Path, path: Path, git_executable: str) -> None:
+    def __init__(
+        self,
+        worktree_root: Path,
+        path: Path,
+        git_executable: str,
+        timeout: float | None,
+    ) -> None:
         self._worktree_root = worktree_root
         self.path = path
         self._git_executable = git_executable
+        self._timeout = timeout
 
     def read_tree(self, treeish: str) -> None:
         """Populate the temporary index from an existing tree-ish object."""
@@ -69,6 +76,7 @@ class IsolatedIndex:
             cwd=self._worktree_root,
             env={"GIT_INDEX_FILE": str(self.path)},
             git_executable=self._git_executable,
+            timeout=self._timeout,
         )
 
 
@@ -77,6 +85,7 @@ def isolated_index(
     worktree_root: str | Path,
     *,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
+    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> Iterator[IsolatedIndex]:
     """Context manager providing an isolated temporary index file for staging Git operations.
 
@@ -88,7 +97,7 @@ def isolated_index(
     os.close(descriptor)
     index_path = Path(raw_path)
     try:
-        yield IsolatedIndex(Path(worktree_root), index_path, git_executable)
+        yield IsolatedIndex(Path(worktree_root), index_path, git_executable, timeout)
     finally:
         index_path.unlink(missing_ok=True)
 
@@ -98,6 +107,7 @@ def create_blob(
     content: bytes,
     *,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
+    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> str:
     """Write raw bytes to the Git object database as a blob and return its object ID."""
     result = process.run_git(
@@ -105,6 +115,7 @@ def create_blob(
         cwd=worktree_root,
         input_bytes=content,
         git_executable=git_executable,
+        timeout=timeout,
     )
     return result.stdout.strip()
 
@@ -116,6 +127,7 @@ def create_commit(
     parent: str,
     message: str,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
+    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> str:
     """Create a commit object pointing to the specified tree and parent commit, returning its object ID."""
     author_name, author_email = _resolve_identity(
@@ -131,6 +143,7 @@ def create_commit(
             "GIT_COMMITTER_EMAIL": author_email,
         },
         git_executable=git_executable,
+        timeout=timeout,
     )
     return result.stdout.strip()
 
@@ -179,6 +192,7 @@ def update_index_entry(
     oid: str,
     path: str,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
+    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> None:
     """Update a single entry in the repository's real index file via update-index --cacheinfo.
 
@@ -190,6 +204,7 @@ def update_index_entry(
         cwd=worktree_root,
         env={"GIT_INDEX_FILE": None},
         git_executable=git_executable,
+        timeout=timeout,
     )
     real_index = Path(git_dir.stdout.strip()) / "index"
     process.run_git(
@@ -197,6 +212,7 @@ def update_index_entry(
         cwd=worktree_root,
         env={"GIT_INDEX_FILE": str(real_index)},
         git_executable=git_executable,
+        timeout=timeout,
     )
 
 
@@ -208,6 +224,7 @@ def update_ref_conditionally(
     expected_oid: str,
     reason: str,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
+    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> RefUpdateResult:
     """Advance ref to new_oid only if it currently points to expected_oid.
 
@@ -223,6 +240,7 @@ def update_ref_conditionally(
         cwd=worktree_root,
         check=False,
         git_executable=git_executable,
+        timeout=timeout,
     )
     if result.returncode == 0:
         return RefUpdateResult(
@@ -232,7 +250,9 @@ def update_ref_conditionally(
             current_oid=new_oid,
             stderr="",
         )
-    current = _current_ref_oid(worktree_root, ref, git_executable=git_executable)
+    current = _current_ref_oid(
+        worktree_root, ref, git_executable=git_executable, timeout=timeout
+    )
     if current != expected_oid:
         return RefUpdateResult(
             ref=ref,
@@ -254,6 +274,7 @@ def _current_ref_oid(
     ref: str,
     *,
     git_executable: str,
+    timeout: float | None,
 ) -> str | None:
     """Return the ref's current OID, or None when the ref does not resolve."""
     probe = process.run_git(
@@ -261,5 +282,6 @@ def _current_ref_oid(
         cwd=worktree_root,
         check=False,
         git_executable=git_executable,
+        timeout=timeout,
     )
     return probe.stdout.strip() if probe.returncode == 0 else None

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from backend.app.protokflow.error.git import GitBinaryMissingError, GitCommandError
+from backend.app.protokflow.error.git import (
+    GitBinaryMissingError,
+    GitCommandError,
+    GitTimeoutError,
+)
 from backend.app.protokflow.git import process
 from tests.fixtures.git import TemporaryGitRepository
 
@@ -52,6 +57,26 @@ def test_env_overrides_reach_the_child_and_unset_removes_variables(
         env={"GIT_TRACE": None},
     )
     assert "trace:" not in clean.stderr.lower()
+
+
+def test_timeout_expiry_raises_domain_error(
+    git_repo: TemporaryGitRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An expired subprocess timeout raises GitTimeoutError preserving the command and bound."""
+
+    def expired_run(
+        *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(process.subprocess, "run", expired_run)
+
+    with pytest.raises(GitTimeoutError) as excinfo:
+        process.run_git(("status", "--short"), cwd=git_repo.root)
+
+    assert excinfo.value.timeout == process.DEFAULT_GIT_TIMEOUT_SECONDS
+    assert "status" in excinfo.value.command
 
 
 def test_ambient_routing_variables_do_not_redirect_children(

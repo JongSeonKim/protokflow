@@ -17,9 +17,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from backend.app.protokflow.error.git import GitBinaryMissingError, GitCommandError
+from backend.app.protokflow.error.git import (
+    GitBinaryMissingError,
+    GitCommandError,
+    GitTimeoutError,
+)
 
 DEFAULT_GIT_EXECUTABLE = "git"
+DEFAULT_GIT_TIMEOUT_SECONDS: float = 60.0
 
 # Repository, index, object, config, and discovery controls whose ambient
 # values would redirect git children away from the requested repository.
@@ -57,6 +62,7 @@ def run_git(
     input_bytes: bytes | None = None,
     check: bool = True,
     git_executable: str = DEFAULT_GIT_EXECUTABLE,
+    timeout: float | None = DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> GitCommandResult:
     """Run git with captured streams and a controlled environment.
 
@@ -64,7 +70,9 @@ def run_git(
     from the parent process and always win over the sanitized base, so
     GIT_INDEX_FILE=None restores the repository's real index despite an
     inherited override. Streams are decoded as UTF-8 with replacement so
-    malformed bytes never abort observation.
+    malformed bytes never abort observation. A timeout in seconds bounds each
+    invocation and an expiry raises GitTimeoutError, so a stalled network or
+    FUSE mount cannot pin the calling thread forever.
     """
     command = (git_executable, *(str(argument) for argument in args))
     child_env = os.environ.copy()
@@ -86,7 +94,10 @@ def run_git(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise GitTimeoutError(command, timeout=exc.timeout or 0.0) from exc
     except FileNotFoundError as exc:
         # Re-raise FileNotFoundError when the working directory does not exist,
         # distinguishing an invalid target path from a missing git executable.

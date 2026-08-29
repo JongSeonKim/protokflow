@@ -33,11 +33,12 @@ def observe_checkout(
     path: str | Path,
     *,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
+    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> CheckoutContext:
     """Inspect and return the current checkout state of the Git worktree containing path."""
     try:
         toplevel, common_dir, git_dir = _worktree_paths(
-            path, git_executable=git_executable
+            path, git_executable=git_executable, timeout=timeout
         )
     except GitCommandError as exc:
         raise GitWorktreeInvalidError(f"not a Git worktree: {Path(path)}") from exc
@@ -49,6 +50,7 @@ def observe_checkout(
         cwd=toplevel,
         check=False,
         git_executable=git_executable,
+        timeout=timeout,
     )
     symbolic_ref = symbolic.stdout.strip() if symbolic.returncode == 0 else None
 
@@ -57,6 +59,7 @@ def observe_checkout(
         cwd=toplevel,
         check=False,
         git_executable=git_executable,
+        timeout=timeout,
     )
     if head.returncode == 0:
         head_oid: str | None = head.stdout.strip()
@@ -86,6 +89,7 @@ def _worktree_paths(
     path: str | Path,
     *,
     git_executable: str,
+    timeout: float | None,
 ) -> tuple[Path, Path, Path]:
     """Resolve the worktree root, common git directory, and worktree git directory in a single rev-parse call."""
     result = process.run_git(
@@ -98,6 +102,7 @@ def _worktree_paths(
         ),
         cwd=path,
         git_executable=git_executable,
+        timeout=timeout,
     )
     toplevel, common_dir, git_dir = result.stdout.splitlines()[:3]
     return Path(toplevel), Path(common_dir), Path(git_dir)

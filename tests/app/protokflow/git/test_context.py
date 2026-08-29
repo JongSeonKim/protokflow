@@ -71,6 +71,22 @@ def test_invalid_repository_directory_is_rejected(tmp_path: Path) -> None:
     assert excinfo.value.__cause__ is not None
 
 
+def test_worktree_path_with_newline_is_observed_correctly(
+    git_repo: TemporaryGitRepository,
+) -> None:
+    """A newline inside the worktree path cannot shift the rev-parse value framing."""
+    weird_root = git_repo.root.parent / "weird\nname"
+    git_repo.run("worktree", "add", "-b", "newline-branch", str(weird_root))
+    sibling = TemporaryGitRepository(weird_root)
+
+    observation = context.observe_checkout(sibling.root)
+
+    assert observation.worktree_root == weird_root
+    assert observation.symbolic_ref == "refs/heads/newline-branch"
+    assert observation.detached is False
+    assert observation.head_oid == sibling.head_oid()
+
+
 def test_observe_checkout_forwards_timeout_bound(
     git_repo: TemporaryGitRepository,
     monkeypatch: pytest.MonkeyPatch,

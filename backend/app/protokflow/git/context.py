@@ -37,41 +37,23 @@ def observe_checkout(
 ) -> CheckoutContext:
     """Inspect and return the current checkout state of the Git worktree containing path."""
     try:
-        toplevel, common_dir, git_dir = _worktree_paths(
-            path, git_executable=git_executable, timeout=timeout
+        toplevel = _resolve_git_path(
+            path, "--show-toplevel", git_executable=git_executable, timeout=timeout
+        )
+        common_dir = _resolve_git_path(
+            path, "--git-common-dir", git_executable=git_executable, timeout=timeout
+        )
+        git_dir = _resolve_git_path(
+            path, "--absolute-git-dir", git_executable=git_executable, timeout=timeout
         )
     except GitCommandError as exc:
         raise GitWorktreeInvalidError(f"not a Git worktree: {Path(path)}") from exc
     except OSError as exc:
         raise GitWorktreeInvalidError(f"cannot access path: {Path(path)}") from exc
 
-    symbolic = process.run_git(
-        ("symbolic-ref", "--quiet", "HEAD"),
-        cwd=toplevel,
-        check=False,
-        git_executable=git_executable,
-        timeout=timeout,
+    symbolic_ref, head_oid = _head_state(
+        toplevel, git_executable=git_executable, timeout=timeout
     )
-    symbolic_ref = symbolic.stdout.strip() if symbolic.returncode == 0 else None
-
-    head = process.run_git(
-        ("rev-parse", "--verify", "--quiet", "HEAD"),
-        cwd=toplevel,
-        check=False,
-        git_executable=git_executable,
-        timeout=timeout,
-    )
-    if head.returncode == 0:
-        head_oid: str | None = head.stdout.strip()
-    elif head.returncode == 1:
-        head_oid = None  # Unborn branch: symbolic reference exists, but no commits yet
-    else:
-        raise GitCommandError(
-            head.command,
-            returncode=head.returncode,
-            stdout=head.stdout,
-            stderr=head.stderr,
-        )
 
     return CheckoutContext(
         worktree_root=Path(toplevel),
@@ -85,24 +67,67 @@ def observe_checkout(
     )
 
 
-def _worktree_paths(
+def _resolve_git_path(
     path: str | Path,
+    flag: str,
     *,
     git_executable: str,
     timeout: float | None,
-) -> tuple[Path, Path, Path]:
-    """Resolve the worktree root, common git directory, and worktree git directory in a single rev-parse call."""
+) -> Path:
+    """Resolve a single absolute path value from rev-parse.
+
+    Parses the whole stdout as one value (stripping exactly one trailing
+    newline) so a worktree path containing newline characters cannot shift a
+    positional multi-line parse.
+    """
     result = process.run_git(
-        (
-            "rev-parse",
-            "--path-format=absolute",
-            "--show-toplevel",
-            "--git-common-dir",
-            "--absolute-git-dir",
-        ),
+        ("rev-parse", "--path-format=absolute", flag),
         cwd=path,
         git_executable=git_executable,
         timeout=timeout,
     )
-    toplevel, common_dir, git_dir = result.stdout.splitlines()[:3]
-    return Path(toplevel), Path(common_dir), Path(git_dir)
+    value = result.stdout
+    if value.endswith("\n"):
+        value = value[:-1]
+    return Path(value)
+
+
+def _head_state(
+    toplevel: Path,
+    *,
+    git_executable: str,
+    timeout: float | None,
+) -> tuple[str | None, str | None]:
+    """Resolve the symbolic ref and HEAD OID in one rev-parse invocation.
+
+    Emits the HEAD OID first and its symbolic full name second, since neither
+    value can contain a newline. A detached HEAD reports the literal name HEAD
+    and therefore no symbolic ref. On an unborn branch rev-parse fails and the
+    symbolic ref still resolves through symbolic-ref, with no OID.
+    """
+    combined = process.run_git(
+        ("rev-parse", "HEAD", "--symbolic-full-name", "HEAD"),
+        cwd=toplevel,
+        check=False,
+        git_executable=git_executable,
+        timeout=timeout,
+    )
+    if combined.returncode == 0:
+        oid, _, symbolic = combined.stdout.partition("\n")
+        symbolic_ref = symbolic.strip()
+        return (None if symbolic_ref == "HEAD" else symbolic_ref), oid.strip()
+    fallback = process.run_git(
+        ("symbolic-ref", "--quiet", "HEAD"),
+        cwd=toplevel,
+        check=False,
+        git_executable=git_executable,
+        timeout=timeout,
+    )
+    if fallback.returncode == 0:
+        return fallback.stdout.strip(), None
+    raise GitCommandError(
+        combined.command,
+        returncode=combined.returncode,
+        stdout=combined.stdout,
+        stderr=combined.stderr,
+    )

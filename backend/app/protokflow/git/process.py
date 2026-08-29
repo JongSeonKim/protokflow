@@ -1,8 +1,12 @@
 """Subprocess execution wrapper for the Git command-line interface.
 
-Centralizes all Git CLI interactions. Sets GIT_OPTIONAL_LOCKS=0 on all child
-processes to prevent read-only observation commands from acquiring index locks
-or unintentionally refreshing filesystem stat caches.
+Centralizes all Git CLI interactions. Builds a sanitized child environment that
+strips inherited repository, index, object, config, and discovery routing
+variables, so a parent process launched inside another repository cannot
+redirect child writes or reads. Sets GIT_OPTIONAL_LOCKS=0 to prevent read-only
+observation commands from acquiring index locks or unintentionally refreshing
+filesystem stat caches, and pins LC_ALL=C so git output stays locale-stable.
+Explicit per-call entries layered on top of the sanitized base always win.
 """
 
 from __future__ import annotations
@@ -16,6 +20,23 @@ from pathlib import Path
 from backend.app.protokflow.error.git import GitBinaryMissingError, GitCommandError
 
 DEFAULT_GIT_EXECUTABLE = "git"
+
+# Repository, index, object, config, and discovery controls whose ambient
+# values would redirect git children away from the requested repository.
+_SANITIZED_ENV_KEYS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_COUNT",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,13 +61,17 @@ def run_git(
     """Run git with captured streams and a controlled environment.
 
     Environment entries override (or, when None, remove) variables inherited
-    from the parent process, so GIT_INDEX_FILE=None restores the repository's
-    real index despite an inherited override. Streams are decoded as UTF-8
-    with replacement so malformed bytes never abort observation.
+    from the parent process and always win over the sanitized base, so
+    GIT_INDEX_FILE=None restores the repository's real index despite an
+    inherited override. Streams are decoded as UTF-8 with replacement so
+    malformed bytes never abort observation.
     """
     command = (git_executable, *(str(argument) for argument in args))
     child_env = os.environ.copy()
+    for key in _SANITIZED_ENV_KEYS:
+        child_env.pop(key, None)
     child_env["GIT_OPTIONAL_LOCKS"] = "0"
+    child_env["LC_ALL"] = "C"
     for key, value in (env or {}).items():
         if value is None:
             child_env.pop(key, None)

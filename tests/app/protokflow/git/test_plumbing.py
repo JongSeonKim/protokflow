@@ -59,6 +59,41 @@ def test_isolated_index_commit_includes_only_design_md_change(
     )  # HEAD reference remains untouched by commit-tree creation
 
 
+def test_create_commit_resolves_configured_identity(
+    git_repo: TemporaryGitRepository,
+) -> None:
+    """commit-tree receives the repository's configured identity as explicit env values."""
+    commit = plumbing.create_commit(
+        git_repo.root,
+        tree=git_repo.head_tree(),
+        parent=git_repo.head_oid(),
+        message="identity: configured",
+    )
+
+    commit_text = git_repo.commit_object(commit)
+    assert "author Protokflow Tests <tests@protokflow.invalid>" in commit_text
+    assert "committer Protokflow Tests <tests@protokflow.invalid>" in commit_text
+
+
+def test_create_commit_falls_back_to_runtime_identity_without_config(
+    git_repo: TemporaryGitRepository,
+) -> None:
+    """An unconfigured repository still produces commits using the fixed runtime identity."""
+    git_repo.run("config", "--local", "--unset", "user.name")
+    git_repo.run("config", "--local", "--unset", "user.email")
+
+    commit = plumbing.create_commit(
+        git_repo.root,
+        tree=git_repo.head_tree(),
+        parent=git_repo.head_oid(),
+        message="identity: runtime fallback",
+    )
+
+    commit_text = git_repo.commit_object(commit)
+    assert "author Protokflow Runtime <runtime@protokflow.invalid>" in commit_text
+    assert "committer Protokflow Runtime <runtime@protokflow.invalid>" in commit_text
+
+
 def test_conditional_ref_update_accepts_matching_expected_oid(
     git_repo: TemporaryGitRepository,
 ) -> None:

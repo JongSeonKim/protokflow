@@ -20,6 +20,10 @@ from backend.app.protokflow.error.git import GitCommandError
 from backend.app.protokflow.git import process
 
 
+RUNTIME_IDENTITY_NAME = "Protokflow Runtime"
+RUNTIME_IDENTITY_EMAIL = "runtime@protokflow.invalid"
+
+
 @dataclass(frozen=True, slots=True)
 class RefUpdateResult:
     """Outcome of a conditional reference update (compare-and-swap).
@@ -112,12 +116,58 @@ def create_commit(
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
 ) -> str:
     """Create a commit object pointing to the specified tree and parent commit, returning its object ID."""
+    author_name, author_email = _resolve_identity(
+        worktree_root, git_executable=git_executable
+    )
     result = process.run_git(
         ("commit-tree", tree, "-p", parent, "-m", message),
         cwd=worktree_root,
+        env={
+            "GIT_AUTHOR_NAME": author_name,
+            "GIT_AUTHOR_EMAIL": author_email,
+            "GIT_COMMITTER_NAME": author_name,
+            "GIT_COMMITTER_EMAIL": author_email,
+        },
         git_executable=git_executable,
     )
     return result.stdout.strip()
+
+
+def _resolve_identity(
+    worktree_root: str | Path,
+    *,
+    git_executable: str,
+) -> tuple[str, str]:
+    """Resolve author/committer identity from git config with a fixed runtime fallback."""
+    name = _config_value(worktree_root, "user.name", git_executable=git_executable)
+    email = _config_value(worktree_root, "user.email", git_executable=git_executable)
+    return (
+        name or RUNTIME_IDENTITY_NAME,
+        email or RUNTIME_IDENTITY_EMAIL,
+    )
+
+
+def _config_value(
+    worktree_root: str | Path,
+    key: str,
+    *,
+    git_executable: str,
+) -> str | None:
+    """Return the repository's local value for a git config key, or None when unset.
+
+    Resolution is deliberately scoped to the repository's own config file so
+    export identity stays deterministic and independent of the host account's
+    global or system git configuration.
+    """
+    result = process.run_git(
+        ("config", "--local", "--null", key),
+        cwd=worktree_root,
+        check=False,
+        git_executable=git_executable,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.rstrip("\x00")
 
 
 def update_index_entry(

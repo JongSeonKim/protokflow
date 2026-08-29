@@ -52,3 +52,20 @@ def test_env_overrides_reach_the_child_and_unset_removes_variables(
         env={"GIT_TRACE": None},
     )
     assert "trace:" not in clean.stderr.lower()
+
+
+def test_ambient_routing_variables_do_not_redirect_children(
+    git_repo: TemporaryGitRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE never redirect git children."""
+    monkeypatch.setenv("GIT_DIR", str(git_repo.root / "elsewhere.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(git_repo.root / "elsewhere"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(git_repo.root / "foreign-index"))
+
+    result = process.run_git(
+        ("rev-parse", "--path-format=absolute", "--show-toplevel"),
+        cwd=git_repo.root,
+    )
+
+    assert Path(result.stdout.strip()) == git_repo.root.resolve()

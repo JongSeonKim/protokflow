@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from backend.database.url import create_database_url
 
-pytest_plugins = ("tests.fixtures.db",)
+pytest_plugins = ("tests.fixtures.db", "tests.fixtures.git")
 
 # Resolved path to the repository-local production database, used by meta-tests
 # to verify that test executions do not write to or alter production state.

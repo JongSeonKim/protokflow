@@ -8,9 +8,11 @@ database or framework dependencies.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import unicodedata
+import uuid
 from pathlib import Path
 
 WORKTREE_ID_DOMAIN = b"protokflow:worktree\x00"
@@ -66,13 +68,30 @@ def _stable_id(
     return hashlib.sha256(serialized).hexdigest()
 
 
+@functools.cache
 def _is_case_insensitive(directory: Path) -> bool:
-    """Probe whether the host filesystem treats case-variant paths as identical."""
-    swapped = directory.name.swapcase()
-    if swapped == directory.name:
-        return False
-    probe = directory.with_name(swapped)
+    """Probe whether the filesystem hosting the directory treats case as insignificant.
+
+    Creates a uniquely named hidden marker plus its swapcase twin inside the
+    directory, so the probe can never collide with a pre-existing alias and
+    never depends on the directory's own name containing cased characters.
+    Both markers are removed before returning; the result is cached because a
+    filesystem's case behavior does not change during a process.
+    """
+    marker = directory / f".protokflow-case-probe-{uuid.uuid4().hex}"
+    twin = marker.with_name(marker.name.swapcase())
+    created = False
     try:
-        return probe.exists() and os.path.samefile(probe, directory)
-    except OSError:
+        try:
+            marker.touch()
+            created = True
+            twin.touch(exist_ok=False)
+        except FileExistsError:
+            return True
+        except OSError:
+            return False
         return False
+    finally:
+        if created:
+            marker.unlink(missing_ok=True)
+        twin.unlink(missing_ok=True)

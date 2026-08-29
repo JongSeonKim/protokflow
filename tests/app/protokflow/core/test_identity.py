@@ -5,6 +5,8 @@ from __future__ import annotations
 import unicodedata
 from pathlib import Path
 
+import pytest
+
 from backend.app.protokflow.core import identity
 from tests.fixtures.git import TemporaryGitRepository
 
@@ -55,6 +57,49 @@ def test_auto_detection_matches_filesystem_behavior(tmp_path: Path) -> None:
     insensitive = swapped.exists()  # True only on case-insensitive filesystems
     same_id = identity.worktree_id(directory) == identity.worktree_id(swapped)
     assert same_id is insensitive
+
+
+def test_probe_does_not_mistake_symlink_alias_for_case_insensitivity(
+    tmp_path: Path,
+) -> None:
+    """A pre-existing swapped-case symlink alias must not collapse the probe result."""
+    directory = tmp_path / "Worktree"
+    directory.mkdir()
+    alias = tmp_path / "wORKTREE"
+    try:
+        alias.symlink_to(directory, target_is_directory=True)
+    except FileExistsError:
+        pytest.skip("host filesystem is case-insensitive")
+
+    assert identity._is_case_insensitive(directory) is False
+
+
+def test_probe_detects_folding_for_uncased_directory_names(tmp_path: Path) -> None:
+    """A directory name without cased letters still gets a correct probe result."""
+    ground_truth_probe = tmp_path / "case-probe"
+    ground_truth_probe.touch()
+    insensitive = True
+    try:
+        (tmp_path / "CASE-PROBE").touch(exist_ok=False)
+    except FileExistsError:
+        insensitive = True
+    except OSError:
+        insensitive = False
+
+    uncased = tmp_path / "2024"
+    uncased.mkdir()
+
+    assert identity._is_case_insensitive(uncased) is insensitive
+
+
+def test_probe_leaves_no_artifacts_behind(tmp_path: Path) -> None:
+    """Probing a directory creates and removes its markers without a trace."""
+    directory = tmp_path / "ProbeTarget"
+    directory.mkdir()
+
+    identity.normalize_path(directory)
+
+    assert list(directory.iterdir()) == []
 
 
 def test_unicode_normalization_unifies_equivalent_spellings(tmp_path: Path) -> None:

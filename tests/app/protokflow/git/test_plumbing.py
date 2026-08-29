@@ -16,7 +16,7 @@ def _modified_design_md() -> str:
 def test_create_blob_round_trips_content(git_repo: TemporaryGitRepository) -> None:
     """Creating a blob stores the exact binary content under the returned object ID."""
     content = b"alpha\nbeta"
-    oid = plumbing.create_blob(git_repo.root, content)
+    oid = plumbing.create_blob(plumbing.GitRepo(git_repo.root), content)
     result = git_repo.run("cat-file", "blob", oid)
     assert result.stdout == content.decode()
 
@@ -30,17 +30,15 @@ def test_isolated_index_commit_includes_only_design_md_change(
     modified = _modified_design_md()
     git_repo.write_file("DESIGN.md", modified)  # Unstaged working tree change
 
+    repo = plumbing.GitRepo(git_repo.root)
     parent = git_repo.head_oid()
-    new_blob = plumbing.create_blob(git_repo.root, modified.encode())
+    new_blob = plumbing.create_blob(repo, modified.encode())
     with plumbing.isolated_index(git_repo.root) as index:
         index.read_tree(parent)
         index.update_entry(mode="100644", oid=new_blob, path="DESIGN.md")
         tree = index.write_tree()
     commit = plumbing.create_commit(
-        git_repo.root,
-        tree=tree,
-        parent=parent,
-        message="export candidate",
+        repo, tree=tree, parent=parent, message="export candidate"
     )
 
     new_entries = git_repo.tree_entries(tree)
@@ -64,7 +62,7 @@ def test_create_commit_resolves_configured_identity(
 ) -> None:
     """commit-tree receives the repository's configured identity as explicit env values."""
     commit = plumbing.create_commit(
-        git_repo.root,
+        plumbing.GitRepo(git_repo.root),
         tree=git_repo.head_tree(),
         parent=git_repo.head_oid(),
         message="identity: configured",
@@ -83,7 +81,7 @@ def test_create_commit_falls_back_to_runtime_identity_without_config(
     git_repo.run("config", "--local", "--unset", "user.email")
 
     commit = plumbing.create_commit(
-        git_repo.root,
+        plumbing.GitRepo(git_repo.root),
         tree=git_repo.head_tree(),
         parent=git_repo.head_oid(),
         message="identity: runtime fallback",
@@ -98,15 +96,13 @@ def test_conditional_ref_update_accepts_matching_expected_oid(
     git_repo: TemporaryGitRepository,
 ) -> None:
     """Advancing a ref succeeds when the expected current OID matches."""
+    repo = plumbing.GitRepo(git_repo.root)
     base = git_repo.head_oid()
     target = plumbing.create_commit(
-        git_repo.root,
-        tree=git_repo.head_tree(),
-        parent=base,
-        message="advance",
+        repo, tree=git_repo.head_tree(), parent=base, message="advance"
     )
     result = plumbing.update_ref_conditionally(
-        git_repo.root,
+        repo,
         ref="refs/heads/main",
         new_oid=target,
         expected_oid=base,
@@ -121,20 +117,17 @@ def test_conditional_ref_update_rejects_stale_expected_oid(
     git_repo: TemporaryGitRepository,
 ) -> None:
     """Advancing a ref is rejected with conflict details when the current OID has moved concurrently."""
+    repo = plumbing.GitRepo(git_repo.root)
     base = git_repo.head_oid()
     tree = git_repo.head_tree()
-    target = plumbing.create_commit(
-        git_repo.root, tree=tree, parent=base, message="target"
-    )
-    rival = plumbing.create_commit(
-        git_repo.root, tree=tree, parent=base, message="rival"
-    )
+    target = plumbing.create_commit(repo, tree=tree, parent=base, message="target")
+    rival = plumbing.create_commit(repo, tree=tree, parent=base, message="rival")
     git_repo.set_ref(
         "refs/heads/main", rival
     )  # Simulate a concurrent writer updating the branch
 
     result = plumbing.update_ref_conditionally(
-        git_repo.root,
+        repo,
         ref="refs/heads/main",
         new_oid=target,
         expected_oid=base,
@@ -153,15 +146,16 @@ def test_conditional_ref_update_rejects_concurrently_deleted_ref(
     git_repo: TemporaryGitRepository,
 ) -> None:
     """A ref deleted between expectation and update is a rejected CAS, not a hard error."""
+    repo = plumbing.GitRepo(git_repo.root)
     base = git_repo.head_oid()
     target = plumbing.create_commit(
-        git_repo.root, tree=git_repo.head_tree(), parent=base, message="target"
+        repo, tree=git_repo.head_tree(), parent=base, message="target"
     )
     git_repo.run("branch", "topic")
     git_repo.run("update-ref", "-d", "refs/heads/topic")
 
     result = plumbing.update_ref_conditionally(
-        git_repo.root,
+        repo,
         ref="refs/heads/topic",
         new_oid=target,
         expected_oid=base,
@@ -176,9 +170,10 @@ def test_conditional_ref_update_raises_when_ref_unchanged(
     git_repo: TemporaryGitRepository,
 ) -> None:
     """A non-zero exit with the ref still at the expected OID is a permanent failure."""
+    repo = plumbing.GitRepo(git_repo.root)
     with pytest.raises(GitCommandError):
         plumbing.update_ref_conditionally(
-            git_repo.root,
+            repo,
             ref="refs/heads/main",
             new_oid="definitely-not-an-oid",
             expected_oid=git_repo.head_oid(),
@@ -195,9 +190,9 @@ def test_update_index_entry_replaces_single_real_index_path(
     before = git_repo.index_entries()
 
     modified = _modified_design_md()
-    blob = plumbing.create_blob(git_repo.root, modified.encode())
+    blob = plumbing.create_blob(plumbing.GitRepo(git_repo.root), modified.encode())
     plumbing.update_index_entry(
-        git_repo.root,
+        plumbing.GitRepo(git_repo.root),
         mode="100644",
         oid=blob,
         path="DESIGN.md",
@@ -221,7 +216,7 @@ def test_isolated_index_ignores_inherited_env_and_cleans_up(
 
     with plumbing.isolated_index(git_repo.root) as index:
         assert index.path != bogus
-        assert index.path.exists()
+        assert not index.path.exists()  # git starts from a nonexistent index file
         index.read_tree(git_repo.head_oid())
     assert not index.path.exists()
     assert not bogus.exists()  # Inherited GIT_INDEX_FILE path was never touched

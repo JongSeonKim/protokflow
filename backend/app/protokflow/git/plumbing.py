@@ -43,20 +43,21 @@ class RefUpdateResult:
     stderr: str
 
 
+@dataclass(frozen=True, slots=True)
+class GitRepo:
+    """Handle binding plumbing operations to one worktree and git executable."""
+
+    worktree_root: Path
+    git_executable: str = process.DEFAULT_GIT_EXECUTABLE
+    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS
+
+
 class IsolatedIndex:
     """Manages operations within an isolated temporary GIT_INDEX_FILE."""
 
-    def __init__(
-        self,
-        worktree_root: Path,
-        path: Path,
-        git_executable: str,
-        timeout: float | None,
-    ) -> None:
-        self._worktree_root = worktree_root
+    def __init__(self, repo: GitRepo, path: Path) -> None:
+        self.repo = repo
         self.path = path
-        self._git_executable = git_executable
-        self._timeout = timeout
 
     def read_tree(self, treeish: str) -> None:
         """Populate the temporary index from an existing tree-ish object."""
@@ -64,7 +65,7 @@ class IsolatedIndex:
 
     def update_entry(self, *, mode: str, oid: str, path: str) -> None:
         """Update or insert a single entry into the temporary index via --cacheinfo."""
-        self._run("update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}")
+        self._run(*_cacheinfo_vector(mode=mode, oid=oid, path=path))
 
     def write_tree(self) -> str:
         """Write the temporary index to the object database and return the resulting tree OID."""
@@ -73,10 +74,10 @@ class IsolatedIndex:
     def _run(self, *args: str) -> process.GitCommandResult:
         return process.run_git(
             args,
-            cwd=self._worktree_root,
+            cwd=self.repo.worktree_root,
             env={"GIT_INDEX_FILE": str(self.path)},
-            git_executable=self._git_executable,
-            timeout=self._timeout,
+            git_executable=self.repo.git_executable,
+            timeout=self.repo.timeout,
         )
 
 
@@ -96,63 +97,58 @@ def isolated_index(
     descriptor, raw_path = tempfile.mkstemp(prefix="protokflow-index-", suffix=".tmp")
     os.close(descriptor)
     index_path = Path(raw_path)
+    index_path.unlink(missing_ok=True)
     try:
-        yield IsolatedIndex(Path(worktree_root), index_path, git_executable, timeout)
+        repo = GitRepo(Path(worktree_root), git_executable, timeout)
+        yield IsolatedIndex(repo, index_path)
     finally:
         index_path.unlink(missing_ok=True)
 
 
-def create_blob(
-    worktree_root: str | Path,
-    content: bytes,
-    *,
-    git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
-    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
-) -> str:
+def _cacheinfo_vector(*, mode: str, oid: str, path: str) -> tuple[str, ...]:
+    """Build the shared update-index --cacheinfo argument vector."""
+    return ("update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}")
+
+
+def create_blob(repo: GitRepo, content: bytes) -> str:
     """Write raw bytes to the Git object database as a blob and return its object ID."""
     result = process.run_git(
         ("hash-object", "-w", "--stdin"),
-        cwd=worktree_root,
+        cwd=repo.worktree_root,
         input_bytes=content,
-        git_executable=git_executable,
-        timeout=timeout,
+        git_executable=repo.git_executable,
+        timeout=repo.timeout,
     )
     return result.stdout.strip()
 
 
 def create_commit(
-    worktree_root: str | Path,
+    repo: GitRepo,
     *,
     tree: str,
     parent: str,
     message: str,
-    git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
-    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> str:
     """Create a commit object pointing to the specified tree and parent commit, returning its object ID."""
     author_name, author_email = _resolve_identity(
-        worktree_root, git_executable=git_executable
+        repo.worktree_root, git_executable=repo.git_executable
     )
     result = process.run_git(
         ("commit-tree", tree, "-p", parent, "-m", message),
-        cwd=worktree_root,
+        cwd=repo.worktree_root,
         env={
             "GIT_AUTHOR_NAME": author_name,
             "GIT_AUTHOR_EMAIL": author_email,
             "GIT_COMMITTER_NAME": author_name,
             "GIT_COMMITTER_EMAIL": author_email,
         },
-        git_executable=git_executable,
-        timeout=timeout,
+        git_executable=repo.git_executable,
+        timeout=repo.timeout,
     )
     return result.stdout.strip()
 
 
-def _resolve_identity(
-    worktree_root: str | Path,
-    *,
-    git_executable: str,
-) -> tuple[str, str]:
+def _resolve_identity(worktree_root: Path, *, git_executable: str) -> tuple[str, str]:
     """Resolve author/committer identity from git config with a fixed runtime fallback."""
     name = _config_value(worktree_root, "user.name", git_executable=git_executable)
     email = _config_value(worktree_root, "user.email", git_executable=git_executable)
@@ -186,13 +182,11 @@ def _config_value(
 
 
 def update_index_entry(
-    worktree_root: str | Path,
+    repo: GitRepo,
     *,
     mode: str,
     oid: str,
     path: str,
-    git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
-    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> None:
     """Update a single entry in the repository's real index file via update-index --cacheinfo.
 
@@ -201,30 +195,28 @@ def update_index_entry(
     """
     git_dir = process.run_git(
         ("rev-parse", "--path-format=absolute", "--absolute-git-dir"),
-        cwd=worktree_root,
+        cwd=repo.worktree_root,
         env={"GIT_INDEX_FILE": None},
-        git_executable=git_executable,
-        timeout=timeout,
+        git_executable=repo.git_executable,
+        timeout=repo.timeout,
     )
     real_index = Path(git_dir.stdout.strip()) / "index"
     process.run_git(
-        ("update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}"),
-        cwd=worktree_root,
+        _cacheinfo_vector(mode=mode, oid=oid, path=path),
+        cwd=repo.worktree_root,
         env={"GIT_INDEX_FILE": str(real_index)},
-        git_executable=git_executable,
-        timeout=timeout,
+        git_executable=repo.git_executable,
+        timeout=repo.timeout,
     )
 
 
 def update_ref_conditionally(
-    worktree_root: str | Path,
+    repo: GitRepo,
     *,
     ref: str,
     new_oid: str,
     expected_oid: str,
     reason: str,
-    git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
-    timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> RefUpdateResult:
     """Advance ref to new_oid only if it currently points to expected_oid.
 
@@ -237,10 +229,10 @@ def update_ref_conditionally(
     """
     result = process.run_git(
         ("update-ref", "-m", reason, "--", ref, new_oid, expected_oid),
-        cwd=worktree_root,
+        cwd=repo.worktree_root,
         check=False,
-        git_executable=git_executable,
-        timeout=timeout,
+        git_executable=repo.git_executable,
+        timeout=repo.timeout,
     )
     if result.returncode == 0:
         return RefUpdateResult(
@@ -250,9 +242,7 @@ def update_ref_conditionally(
             current_oid=new_oid,
             stderr="",
         )
-    current = _current_ref_oid(
-        worktree_root, ref, git_executable=git_executable, timeout=timeout
-    )
+    current = _current_ref_oid(repo, ref)
     if current != expected_oid:
         return RefUpdateResult(
             ref=ref,
@@ -269,19 +259,13 @@ def update_ref_conditionally(
     )
 
 
-def _current_ref_oid(
-    worktree_root: str | Path,
-    ref: str,
-    *,
-    git_executable: str,
-    timeout: float | None,
-) -> str | None:
+def _current_ref_oid(repo: GitRepo, ref: str) -> str | None:
     """Return the ref's current OID, or None when the ref does not resolve."""
     probe = process.run_git(
         ("rev-parse", "--verify", "--quiet", ref),
-        cwd=worktree_root,
+        cwd=repo.worktree_root,
         check=False,
-        git_executable=git_executable,
-        timeout=timeout,
+        git_executable=repo.git_executable,
+        timeout=repo.timeout,
     )
     return probe.stdout.strip() if probe.returncode == 0 else None

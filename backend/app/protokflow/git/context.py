@@ -36,22 +36,8 @@ def observe_checkout(
 ) -> CheckoutContext:
     """Observe the checkout state of the worktree containing path."""
     try:
-        toplevel = _rev_parse(path, "--show-toplevel", git_executable=git_executable)
-        common_dir = Path(
-            _rev_parse(
-                path,
-                "--path-format=absolute",
-                "--git-common-dir",
-                git_executable=git_executable,
-            )
-        )
-        git_dir = Path(
-            _rev_parse(
-                path,
-                "--path-format=absolute",
-                "--absolute-git-dir",
-                git_executable=git_executable,
-            )
+        toplevel, common_dir, git_dir = _worktree_paths(
+            path, git_executable=git_executable
         )
     except GitCommandError as exc:
         raise GitWorktreeInvalidError(f"not a Git worktree: {Path(path)}") from exc
@@ -67,14 +53,14 @@ def observe_checkout(
     symbolic_ref = symbolic.stdout.strip() if symbolic.returncode == 0 else None
 
     head = process.run_git(
-        ("rev-parse", "HEAD"),
+        ("rev-parse", "--verify", "--quiet", "HEAD"),
         cwd=toplevel,
         check=False,
         git_executable=git_executable,
     )
     if head.returncode == 0:
         head_oid: str | None = head.stdout.strip()
-    elif _is_unknown_revision(head.stderr):
+    elif head.returncode == 1:
         head_oid = None  # unborn branch: ref identity exists, no commit yet
     else:
         raise GitCommandError(
@@ -96,18 +82,22 @@ def observe_checkout(
     )
 
 
-def _rev_parse(
+def _worktree_paths(
     path: str | Path,
-    *args: str,
+    *,
     git_executable: str,
-) -> str:
+) -> tuple[Path, Path, Path]:
+    """Resolve toplevel, common dir, and git dir with one rev-parse call."""
     result = process.run_git(
-        ("rev-parse", *args),
+        (
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-common-dir",
+            "--absolute-git-dir",
+        ),
         cwd=path,
         git_executable=git_executable,
     )
-    return result.stdout.strip()
-
-
-def _is_unknown_revision(stderr: str) -> bool:
-    return "unknown revision" in stderr or "ambiguous argument" in stderr
+    toplevel, common_dir, git_dir = result.stdout.splitlines()[:3]
+    return Path(toplevel), Path(common_dir), Path(git_dir)

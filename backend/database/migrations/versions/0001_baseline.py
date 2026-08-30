@@ -8,8 +8,6 @@ Create Date: 2026-08-30 13:32:40.471534
 
 from __future__ import annotations
 
-import backend.app.protokflow.model.types
-import backend.common.model
 import sqlalchemy as sa
 from collections.abc import Sequence
 
@@ -29,7 +27,7 @@ def upgrade() -> None:
         "design_systems",
         sa.Column(
             "id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="ULID primary key",
         ),
@@ -51,13 +49,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "derived_from_id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=True,
             comment="Provenance of a derived system",
         ),
         sa.Column(
             "front_matter_extras",
-            backend.app.protokflow.model.types.Json(),
+            sa.JSON(),
             nullable=False,
             comment="Unmodeled front matter keys preserved verbatim",
         ),
@@ -105,19 +103,19 @@ def upgrade() -> None:
         ),
         sa.Column(
             "synced_at",
-            backend.app.protokflow.model.types.Timestamp(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Last file sync time",
         ),
         sa.Column(
             "created_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=False,
             comment="Created time",
         ),
         sa.Column(
             "updated_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Updated time",
         ),
@@ -130,7 +128,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "deleted_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Deleted time",
         ),
@@ -148,13 +146,13 @@ def upgrade() -> None:
         "design_tokens",
         sa.Column(
             "id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="ULID primary key; re-issued on every token sync. Stable identity is (design_system_id, token_path); never reference as a FK",
         ),
         sa.Column(
             "design_system_id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="Owning design system",
         ),
@@ -184,13 +182,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "created_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=False,
             comment="Created time",
         ),
         sa.Column(
             "updated_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Updated time",
         ),
@@ -203,7 +201,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "deleted_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Deleted time",
         ),
@@ -235,13 +233,13 @@ def upgrade() -> None:
         "prototype_runs",
         sa.Column(
             "id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="ULID primary key",
         ),
         sa.Column(
             "design_system_id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="Associated design system ID",
         ),
@@ -254,13 +252,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "token_snapshot",
-            backend.app.protokflow.model.types.Json(),
+            sa.JSON(),
             nullable=False,
             comment="Resolved token flat map at run creation",
         ),
         sa.Column(
             "variation_axes",
-            backend.app.protokflow.model.types.Json(),
+            sa.JSON(),
             nullable=False,
             comment="Varied token paths",
         ),
@@ -272,13 +270,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "created_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=False,
             comment="Created time",
         ),
         sa.Column(
             "updated_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Updated time",
         ),
@@ -291,7 +289,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "deleted_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Deleted time",
         ),
@@ -319,7 +317,7 @@ def upgrade() -> None:
         "candidates",
         sa.Column(
             "run_id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="Parent run ID",
         ),
@@ -333,13 +331,13 @@ def upgrade() -> None:
         sa.Column("position", sa.Integer(), nullable=False, comment="Display order"),
         sa.Column(
             "initial_tokens",
-            backend.app.protokflow.model.types.Json(),
+            sa.JSON(),
             nullable=False,
             comment="Initial token values at creation",
         ),
         sa.Column(
             "token_overrides",
-            backend.app.protokflow.model.types.Json(),
+            sa.JSON(),
             nullable=False,
             comment="Effective token overrides",
         ),
@@ -351,13 +349,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "created_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=False,
             comment="Created time",
         ),
         sa.Column(
             "updated_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Updated time",
         ),
@@ -370,7 +368,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "deleted_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Deleted time",
         ),
@@ -387,13 +385,13 @@ def upgrade() -> None:
         "exports",
         sa.Column(
             "id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="ULID primary key",
         ),
         sa.Column(
             "run_id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="Parent run ID",
         ),
@@ -420,13 +418,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "created_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=False,
             comment="Created time",
         ),
         sa.Column(
             "updated_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Updated time",
         ),
@@ -439,7 +437,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "deleted_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Deleted time",
         ),
@@ -460,7 +458,7 @@ def upgrade() -> None:
         "slot_contents",
         sa.Column(
             "run_id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="Parent run ID",
         ),
@@ -485,13 +483,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "created_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=False,
             comment="Created time",
         ),
         sa.Column(
             "updated_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Updated time",
         ),
@@ -504,7 +502,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "deleted_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Deleted time",
         ),
@@ -534,7 +532,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "run_id",
-            backend.app.protokflow.model.types.Ulid(length=26),
+            sa.String(length=26),
             nullable=False,
             comment="Parent run ID",
         ),
@@ -562,13 +560,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "created_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=False,
             comment="Created time",
         ),
         sa.Column(
             "updated_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Updated time",
         ),
@@ -581,7 +579,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "deleted_time",
-            backend.common.model.TimeZone(timezone=True),
+            sa.DateTime(timezone=True),
             nullable=True,
             comment="Deleted time",
         ),

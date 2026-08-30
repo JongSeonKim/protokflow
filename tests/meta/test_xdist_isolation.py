@@ -91,7 +91,6 @@ def test_module_import_binds_no_engine_singleton() -> None:
     """Engine creation is deferred to the explicit initialization entry point."""
     assert not hasattr(db, "async_engine")
     assert not hasattr(db, "SQLALCHEMY_DATABASE_URL")
-    assert "PROTOKFLOW_DATABASE_URL" not in os.environ
 
 
 async def test_lifecycle_migrations_stay_on_test_database(

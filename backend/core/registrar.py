@@ -12,6 +12,7 @@ from backend.common.log import set_custom_logfile, setup_logging
 from backend.common.response.response_code import StandardResponseCode
 from backend.core.conf import settings
 from backend.database.db import initialize_database
+from backend.database.db import shutdown_database
 from starlette_context.middleware import ContextMiddleware
 from backend.middleware.access_middleware import AccessMiddleware
 from backend.middleware.i18n_middleware import I18nMiddleware
@@ -27,7 +28,10 @@ if TYPE_CHECKING:
 async def register_init(app: FastAPI) -> AsyncGenerator[None]:
     # Transitional wiring: the parent U5 runtime start owner replaces this call.
     await initialize_database(worktree_root=Path.cwd())
-    yield
+    try:
+        yield
+    finally:
+        await shutdown_database()
 
 
 def register_app() -> FastAPI:

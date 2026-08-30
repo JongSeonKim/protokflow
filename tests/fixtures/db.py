@@ -41,7 +41,7 @@ async def test_engine(_test_database_guard: Path) -> AsyncGenerator[AsyncEngine,
     path = _test_database_guard
     path.parent.mkdir(parents=True, exist_ok=True)
     engine = db.create_database_async_engine(async_sqlite_url(path))
-    previous_engine = db._active_engine
+    previous_runtime = db._active_runtime
     db._set_engine_for_testing(engine)
     try:
         yield engine
@@ -49,7 +49,9 @@ async def test_engine(_test_database_guard: Path) -> AsyncGenerator[AsyncEngine,
         try:
             await engine.dispose()
         finally:
-            db._set_engine_for_testing(previous_engine)
+            db._set_engine_for_testing(
+                previous_runtime.engine if previous_runtime else None
+            )
             cleanup_database_files(path)
 
 
@@ -57,7 +59,7 @@ async def test_engine(_test_database_guard: Path) -> AsyncGenerator[AsyncEngine,
 async def test_db(test_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
     """Provide an async database session with a fresh migration-based schema."""
     factory = db.create_database_async_session(test_engine)
-    previous_factory = db._active_factory
+    previous_factory = db._active_runtime.factory if db._active_runtime else None
     db._set_factory_for_testing(factory)
     session: AsyncSession | None = None
     try:

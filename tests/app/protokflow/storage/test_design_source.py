@@ -10,8 +10,8 @@ import pytest
 
 from backend.app.protokflow.core.discovery import DiscoveredDesignFile
 from backend.app.protokflow.error.design_md import InvalidEncodingError
-from backend.app.protokflow.storage import design_source
-from backend.app.protokflow.storage.design_source import (
+from backend.app.protokflow.storage import design_source  # type: ignore[import-untyped,import-not-found]
+from backend.app.protokflow.storage.design_source import (  # type: ignore[import-untyped,import-not-found]
     SourceChange,
     SourceMetadata,
     observe_design_source,

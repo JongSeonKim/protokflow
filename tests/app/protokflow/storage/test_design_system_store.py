@@ -7,11 +7,11 @@ from backend.app.protokflow.crud.crud_design_system import design_system_dao
 from backend.app.protokflow.crud.crud_design_token import design_token_dao
 from backend.app.protokflow.error.storage import TokenReparentingError
 from backend.app.protokflow.model import DesignSystem, DesignToken
-from backend.app.protokflow.storage.design_source import (
+from backend.app.protokflow.storage.design_source import (  # type: ignore[import-untyped,import-not-found]
     DesignSourceSnapshot,
     SourceMetadata,
 )
-from backend.app.protokflow.storage.design_system_store import (
+from backend.app.protokflow.storage.design_system_store import (  # type: ignore[import-untyped,import-not-found]
     build_design_tokens,
     refresh_source_metadata,
     sync_source_snapshot,

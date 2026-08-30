@@ -23,6 +23,8 @@ from backend.database.migrate import (
     head_revision,
     upgrade_database,
 )
+from backend.database.url import to_sync_url
+from tests.support.db import async_sqlite_url
 
 MODEL_TABLES = {table.name for table in MappedBase.metadata.sorted_tables}
 
@@ -34,7 +36,7 @@ _AUTOCOMPARE_OPTS = {
 
 
 def _url(path: Path) -> str:
-    return f"sqlite:///{path.resolve()}"
+    return to_sync_url(async_sqlite_url(path.resolve()))
 
 
 def _schema_signature(path: Path) -> dict[str, dict[str, Any]]:

@@ -75,13 +75,17 @@ def _apply_owner_only_storage_permissions(database_path: Path) -> None:
     """Restrict the database storage layer (body and WAL/SHM sidecars) to the owner."""
     database_path.parent.mkdir(parents=True, exist_ok=True)
     database_path.parent.chmod(0o700)
+    # Create with owner-only mode when missing; avoid touching the timestamps
+    # of an existing database on re-initialization.
     if not database_path.exists():
         database_path.touch(mode=0o600)
     database_path.chmod(0o600)
     for suffix in ("-wal", "-shm"):
         sidecar = database_path.with_name(f"{database_path.name}{suffix}")
-        if sidecar.exists():
+        try:
             sidecar.chmod(0o600)
+        except FileNotFoundError:
+            continue
 
 
 async def initialize_database(*, worktree_root: Path) -> AsyncEngine:

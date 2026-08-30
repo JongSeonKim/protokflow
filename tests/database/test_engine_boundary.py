@@ -15,10 +15,6 @@ from backend.database.url import create_database_path
 from tests.support.db import async_sqlite_url
 
 
-def _sqlite_url(path: Path) -> str:
-    return async_sqlite_url(path.resolve())
-
-
 async def _restore_active_slots(
     previous_engine: AsyncEngine | None,
     previous_factory: Any,
@@ -63,6 +59,20 @@ def test_database_url_override_takes_precedence_over_worktree_root(
     assert db.database_path_from_url(override) == root / "override" / "custom.db"
 
 
+def test_database_path_from_url_requires_a_file_backed_url() -> None:
+    with pytest.raises(ValueError, match="file-backed SQLite"):
+        db.database_path_from_url("sqlite+aiosqlite:///:memory:")
+
+
+def test_database_path_from_url_ignores_the_url_query(
+    isolated_database_environment: Path,
+) -> None:
+    root = isolated_database_environment
+    url = f"sqlite+aiosqlite:///{root / 'queried.db'}?mode=ro"
+
+    assert db.database_path_from_url(url) == root / "queried.db"
+
+
 async def test_initialize_database_migrates_and_applies_owner_only_permissions(
     isolated_database_environment: Path,
 ) -> None:
@@ -77,7 +87,8 @@ async def test_initialize_database_migrates_and_applies_owner_only_permissions(
         assert database_path.exists()
         assert database_path.parent.stat().st_mode & 0o777 == 0o700
         assert database_path.stat().st_mode & 0o777 == 0o600
-        assert current_revision(_sqlite_url(database_path)) == head_revision()
+        revision_url = async_sqlite_url(database_path.resolve())
+        assert current_revision(revision_url) == head_revision()
         assert db._get_active_engine() is engine
 
         async with db.async_db_session() as session:
@@ -127,8 +138,7 @@ async def test_engine_and_factory_access_before_initialization_errors() -> None:
         with pytest.raises(RuntimeError, match="not initialized"):
             db.async_db_session()
     finally:
-        db._set_factory_for_testing(previous_factory)
-        db._set_engine_for_testing(previous_engine)
+        await _restore_active_slots(previous_engine, previous_factory)
 
 
 async def test_factory_is_exposed_only_after_migration_completes(

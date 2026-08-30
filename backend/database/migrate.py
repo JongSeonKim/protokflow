@@ -11,7 +11,8 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 from backend.database.url import to_sync_url
 
@@ -53,8 +54,7 @@ def _drop_version_table(url: str) -> None:
     engine = create_engine(to_sync_url(url))
     try:
         with engine.begin() as connection:
-            if inspect(connection).has_table("alembic_version"):
-                connection.execute(text("DROP TABLE alembic_version"))
+            connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
     finally:
         engine.dispose()
 
@@ -68,12 +68,15 @@ def current_revision(url: str) -> str | None:
     """
     engine = create_engine(to_sync_url(url))
     try:
-        with engine.connect() as connection:
-            if not inspect(connection).has_table("alembic_version"):
-                return None
-            return connection.execute(
-                text("SELECT version_num FROM alembic_version")
-            ).scalar_one()
+        try:
+            with engine.connect() as connection:
+                return connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalar_one()
+        except OperationalError as err:
+            if "no such table: alembic_version" not in str(err):
+                raise
+            return None
     finally:
         engine.dispose()
 

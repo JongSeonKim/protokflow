@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from sqlalchemy.engine import make_url
+
 
 def create_database_path(*, worktree_root: Path, unittest: bool = False) -> Path:
     """
@@ -72,7 +74,7 @@ def database_path_from_url(url: str) -> Path:
     :param url: sync or async SQLite connection URL
     :return:
     """
-    _, separator, tail = url.partition(":///")
-    if not separator:
+    database = make_url(url).database
+    if not database or database == ":memory:":
         raise ValueError(f"not a file-backed SQLite URL: {url}")
-    return Path(tail)
+    return Path(database)

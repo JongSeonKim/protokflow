@@ -30,17 +30,15 @@ def _test_database_path() -> Path:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _test_database_guard() -> Iterator[None]:
+def _test_database_guard() -> Iterator[Path]:
     """Ensure the resolved database path is strictly confined to the test environment."""
-    validate_test_database_path(_test_database_path())
-    yield
+    yield validate_test_database_path(_test_database_path())
 
 
 @pytest.fixture(scope="session")
-async def test_engine(_test_database_guard: None) -> AsyncGenerator[AsyncEngine, None]:
+async def test_engine(_test_database_guard: Path) -> AsyncGenerator[AsyncEngine, None]:
     """Provide a session-scoped async SQLite engine isolated to this test worker."""
-    del _test_database_guard
-    path = validate_test_database_path(_test_database_path())
+    path = _test_database_guard
     path.parent.mkdir(parents=True, exist_ok=True)
     engine = db.create_database_async_engine(async_sqlite_url(path))
     previous_engine = db._active_engine
@@ -63,9 +61,7 @@ async def test_db(test_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None
     db._set_factory_for_testing(factory)
     session: AsyncSession | None = None
     try:
-        await reset_test_database_schema(
-            validate_test_database_path(_test_database_path())
-        )
+        await reset_test_database_schema(_test_database_path())
         session = factory()
         yield session
     finally:

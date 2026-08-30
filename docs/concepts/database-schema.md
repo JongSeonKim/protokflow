@@ -25,17 +25,13 @@
 3. **파생 가능한 것은 저장하지 않는다.** 렌더링이 1ms 이내(R2)이므로 HTML은 캐시 대상이 아니다.
 4. **SQLite 단일 파일에서 무설정으로 동작한다.** Postgres 이관 경로는 열어두되, 표준 SQL 호환성과 타입 안전성을 보장하는 선에서 설계한다(§8). (KD6)
 5. **스키마가 3계층 토큰 모델을 그대로 반영한다.** Layer 1/2는 디자인 시스템에, Layer 3는 런/후보에 귀속된다.
-6. **DB는 소멸 가능하다.** 아래 §1-1 불변식을 어기는 컬럼을 추가하지 않는다.
+6. **스키마 진화는 무손실 영속 마이그레이션으로 관리한다.** Alembic 마이그레이션 체인을 통해 데이터 유실 없이 스키마를 점진적으로 갱신한다(§5.1, §9).
 
-### 1-1. 저장소 위상 불변식
+### 1-1. 저장소 위상 및 동기화 모델
 
-```
-DB = f(DESIGN.md) + 소멸 가능한 런 이력
-```
-
-- **레포지토리 단위 격리 SQLite DB**: `.protokflow/protokflow.db`는 레포지토리에 격리되며 Git 추적에서 제외(gitignore)된다(바이너리 및 WAL 파일의 충돌 방지).
-- **DB는 작업 저장소, `DESIGN.md` 파일은 Git 기반 팀 동기화 채널**: 모든 읽기/렌더링과 쓰기(`/admin` 편집)는 DB를 거치며, 파일 시스템의 `DESIGN.md`는 투영본으로서 상시 동기화 상태를 유지한다(§6 write-through).
-- **재인덱싱 기반 복구성**: DB 파일이 손상되거나 삭제되더라도 `DESIGN.md` 파일들로부터 디자인 시스템과 토큰 데이터를 완전 복구할 수 있다. (단, 파일에 포함되지 않는 임시 런/패치 이력은 소멸을 허용한다.)
+- **레포지토리/워크트리 단위 격리 SQLite DB**: `.protokflow/protokflow.db`는 레포지토리 작업공간(워크트리)에 격리되며 Git 추적에서 제외(`gitignore`)된다(바이너리 및 WAL 파일의 충돌 방지).
+- **DB는 영속 권위 저장소, `DESIGN.md` 파일은 Git 기반 동기화 채널**: 모든 읽기/렌더링과 쓰기(`/admin` 편집, 토큰 패치)는 DB를 거쳐 영속화되며, 파일 시스템의 `DESIGN.md`는 투영본으로서 상시 동기화 상태를 유지한다(§6 write-through).
+- **파일 변경 감지 및 재인덱싱 동기화**: 외부 변경(`git pull`, 브랜치 전환, 수동 편집 등) 시 `stat` 선검사를 거쳐 `DESIGN.md`로부터 DB 데이터를 최신 상태로 재인덱싱 동기화한다(§6 상시 선검사).
 
 ---
 
@@ -73,7 +69,7 @@ DB = f(DESIGN.md) + 소멸 가능한 런 이력
 
 ## 4. 엔티티 관계
 
-스키마 버전은 별도 테이블이 아니라 SQLite DB 헤더의 `PRAGMA user_version`(정수)에 보관한다(§5.1). 아래 다이어그램은 도메인 테이블 관계만 표시한다.
+스키마 리비전은 Alembic(`alembic_version` 테이블)으로 관리한다(§5.1). 아래 다이어그램은 도메인 테이블 관계를 표시한다.
 
 ```text
 ┌───────────────────────────┐        1     N   ┌──────────────────────────┐
@@ -113,22 +109,14 @@ DDL은 SQLite 기준의 논리 스키마이며, 실제 정의는 SQLAlchemy 2.0 
 - **제약 이름**: 모든 CHECK/UNIQUE/FK/Index에 명시적 이름을 부여한다. SQLAlchemy `MetaData(naming_convention=...)` 규칙(`ck_`, `uq_`, `fk_`, `ix_` 접두사)을 강제하여 마이그레이션 도구(Alembic) 도입 시 불필요한 변경 감지(허위 감지)를 방지한다.
 - **AUTOINCREMENT**: 정수 키를 쓰는 테이블에는 `sqlite_autoincrement=True`를 명시하여 삭제된 rowid 재사용으로 인한 순서 왜곡을 차단한다.
 
-### 5.1 스키마 버전 (`PRAGMA user_version`)
+### 5.1 스키마 버전 관리 (Alembic)
 
-> **⚠️ U2 변경 경고**: 이 절은 데이터베이스가 소멸 가능한 작업 저장소였던 이전 설계를 기술합니다. 현재 설계(U2)는 Alembic 영속 마이그레이션으로 스키마를 관리하며 데이터베이스는 제품 데이터의 권위 있는 저장소입니다. 아래의 "DB 삭제 후 재인덱싱" 복구 경로는 더 이상 유효하지 않으며 데이터 손실을 초래합니다. 전체 문서 갱신은 U13에서 수행됩니다.
+스키마 버전은 Alembic의 `alembic_version` 테이블을 통해 리비전 체인(Revision Chain)으로 관리한다. 데이터베이스는 디자인 시스템, 토큰, 런 및 후보 이력의 영속 권위 저장소이므로, 스키마 변경 시 DB를 삭제하지 않고 무손실 마이그레이션을 적용한다.
 
-스키마 버전은 테이블이 아니라 SQLite DB 헤더의 `PRAGMA user_version`(정수)에 보관한다. 별도 테이블을 두지 않는 이유는 §1-1 불변식 때문이다 — DB는 소멸 가능한 작업 저장소이므로, 필요한 것은 데이터 보존형 마이그레이션이 아니라 "이 DB 파일이 현재 코드와 호환되는가"를 판별하는 경량 호환성 게이트다.
-
-```sql
--- 신규 DB: 헤더 기본값 0 → 부팅 시 기대 버전으로 스탬프
-PRAGMA user_version = 1;
-```
-
-- **부팅 절차**(`backend/database/db.py`, R20): `create_all` 직후 `PRAGMA user_version`을 읽는다.
-  - `0`(신규 파일) → 기대 버전(`EXPECTED_SCHEMA_VERSION`)으로 스탬프한다.
-  - 기대 버전과 일치 → 통과.
-  - 불일치 → `SchemaVersionMismatch`를 발생시키고, **DB 삭제 후 `DESIGN.md` 재인덱싱**을 복구 경로로 안내한다(§9). 데이터를 보존하며 마이그레이션하지 않는다.
-- Postgres 지원은 현재 요구사항 범위 외이므로 방언 중립성보다 테이블이 필요 없는 경량 설계를 채택한다. 실제 Postgres 이관 또는 파괴적 스키마 변경이 필요한 시점에 Alembic을 도입하며, 그때 Alembic의 `alembic_version`이 이 역할을 흡수한다(§8, §9).
+- **부팅 및 초기화 절차** (`backend/database/db.py`, `backend/database/migrate.py`, R20):
+  - DB 초기화(`initialize_database`) 시 워커 스레드에서 `upgrade_database(url)`을 실행하여 보류 중인 리비전을 `head`까지 순차 적용한다.
+  - `create_all`로 생성되어 `alembic_version` 테이블이 없는 기존 레거시 데이터베이스는 대상 리비전으로 자동 스탬프(`stamp`)하여 마이그레이션 체인에 안전하게 편입한다.
+- **마이그레이션 스크립트 관리**: 모든 스키마 DDL 변경사항은 `backend/database/migrations/versions/` 디렉토리에 버전별 마이그레이션 파일로 관리되며, SQLite 및 Postgres 공통으로 일관된 스키마 진화를 보장한다(§8, §9).
 
 ### 5.2 `design_systems`
 
@@ -361,10 +349,10 @@ DESIGN.md 표준 스펙은 참조 문법으로 `{path.to.token}` 문자열 포�
 | R11 (뷰포트 매트릭스) | `candidates.position` |
 | R14/R15 (코드 내보내기) | `exports.format` |
 | R16 (DESIGN.md 양방향 직렬화) | `design_systems` 동기화 컬럼(`title`, `spec_version`, `front_matter_extras`, `front_matter_raw`, `guide_markdown`, `source_*`), `design_tokens` |
-| R17 (SQLite 영속화) | 전체 스키마 + `PRAGMA user_version` |
+| R17 (SQLite 영속화) | 전체 스키마 + Alembic 마이그레이션 |
 | R18 (관리 UI) | `design_systems`, `design_tokens.origin` |
 | R19 (런 보존 정책) | `prototype_runs.status`, `prototype_runs.created_time` |
-| R20 (스키마 버전 검사) | `PRAGMA user_version` |
+| R20 (스키마 버전 검사) | Alembic 마이그레이션 (`alembic_version`) |
 | R21 (파일 선검사 및 재인덱싱) | `design_systems.source_mtime_ns`, `design_systems.source_size`, `design_systems.source_digest` |
 | R22 (파생 디자인 시스템) | `design_systems.derived_from_id`, `design_systems.source_path` |
 
@@ -388,17 +376,16 @@ Postgres 확장 경로는 열어두되, 현재 단계의 준비 작업은 방언
 - `JSONB` variant 승격(`with_variant`), 방언별 조건부 인덱스, 다중 DB 백엔드 DI.
 - 복잡한 다중 테넌시 및 행 단위 소유권 모델.
 
-> **주의**: 레포지토리 단위 격리 모델은 데이터베이스의 물리적 위치(로컬 SQLite 또는 원격 Postgres)를 제약하지 않는다. 다만 원격 Postgres 운영 시 §1-1의 로컬 복구 불변식이 적용되지 않으므로 마이그레이션 도구(Alembic) 관리가 필요하다.
+> **참고**: 레포지토리 단위 격리 모델은 데이터베이스의 물리적 위치(로컬 SQLite 또는 원격 Postgres)를 제약하지 않는다. 로컬 SQLite와 원격 Postgres 모두 Alembic 마이그레이션 체인을 단일 스키마 관리 표준으로 사용한다.
 
 ---
 
 ## 9. 마이그레이션 및 데이터 보존
 
-> **⚠️ U2 변경 경고**: 아래의 DB 삭제·재인덱싱 복구 절차는 폐기되었다. 현재 버전에서 데이터베이스는 영속 저장소이므로 임의로 삭제하면 제품 데이터(디자인 시스템, 토큰, 런 히스토리)가 손실된다. 스키마 정합성은 Alembic 마이그레이션 체인으로 관리한다.
-
-- **0.1.0 초기 버전**: `MappedBase.metadata.create_all()` 및 `PRAGMA user_version` 버전 검사를 적용한다(§5.1). 버전 불일치 시 명확한 오류 및 안내(DB 삭제 후 재인덱싱)를 제공한다.
-- **복구 메커니즘**: DB가 손상되거나 삭제되더라도 `DESIGN.md` 파일들로부터 디자인 시스템과 토큰 트리를 언제든 재인덱싱하여 복구할 수 있다.
-- **런 보존 정책**: 런 데이터는 기본값으로 디자인 시스템당 최근 50개를 유지하며, 초과분은 `archived` 상태로 전환 후 `protokflow prune` 명령으로 정리한다. 디자인 시스템과 토큰은 자동 삭제 대상에서 제외된다.
+- **Alembic 기반 스키마 수명주기**: 스키마 DDL 변경은 `backend/database/migrations/versions/`의 마이그레이션 체인으로 관리하며, 앱 초기화 시 `upgrade_database()`를 통해 최신 리비전(`head`)으로 자동 업그레이드된다(§5.1).
+- **데이터 영속성 보장**: 데이터베이스는 디자인 시스템, 토큰, 프로토타입 런 및 후보 이력의 영속 권위 저장소이다. 스키마 변경 시 데이터를 삭제하지 않고 점진적 마이그레이션으로 데이터를 보존한다.
+- **`DESIGN.md` 파일 동기화 및 복구**: 신규 워크트리 환경 또는 파일 외부 변경 시 `protokflow index` CLI 및 자동 선검사 메커니즘을 통해 파일로부터 토큰 트리를 동기화/복구할 수 있다.
+- **런 보존 정책**: 런 데이터는 기본값으로 디자인 시스템당 최근 50개를 유지하며, 초과분은 `archived` 상태로 전환 후 `protokflow prune` 명령으로 정리한다. 디자인 시스템과 토큰은 자동 정리 대상에서 제외된다.
 - **커넥션 설정**: 커넥션 초기화 시 `PRAGMA foreign_keys=ON`, `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout`을 강제하여 CASCADE 정합성과 다중 프로세스 동시성을 보장한다.
 
 ---

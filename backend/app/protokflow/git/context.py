@@ -86,9 +86,11 @@ def _resolve_git_path(
         git_executable=git_executable,
         timeout=timeout,
     )
+
     value = result.stdout
     if value.endswith("\n"):
         value = value[:-1]
+
     return Path(value)
 
 
@@ -116,6 +118,7 @@ def _head_state(
         oid, _, symbolic = combined.stdout.partition("\n")
         symbolic_ref = symbolic[:-1] if symbolic.endswith("\n") else symbolic
         return (None if symbolic_ref == "HEAD" else symbolic_ref), oid.strip()
+
     fallback = process.run_git(
         ("symbolic-ref", "--quiet", "HEAD"),
         cwd=toplevel,
@@ -126,6 +129,7 @@ def _head_state(
     if fallback.returncode == 0:
         ref = fallback.stdout
         return (ref[:-1] if ref.endswith("\n") else ref), None
+
     raise GitCommandError(
         fallback.command,
         returncode=fallback.returncode,

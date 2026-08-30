@@ -37,10 +37,6 @@ ENV/
 .env
 .env.local
 
-# Firebase service account key
-firebase-service-account.json
-backend/firebase-service-account.json
-
 # Database
 *.db
 *.sqlite
@@ -59,26 +55,14 @@ alembic.ini.bak
 temp/
 .*.tmp
 
-# IP geolocation database (DB-IP Lite MMDB, ~124 MB, refreshed monthly)
-backend/data/dbip-city-lite.mmdb
-
 # log
-backend/log/
-
-# upload
-upload/
+**/log/
 
 # Git worktree
 .worktrees
 
-# BMAD
-*.bak
-
-# Antigravity CLI
-.antigravitycli/
-
-# legacy design harness
-design_harness*/
-
 # Compound Engineering prototypes
 .context/compound-engineering/
+
+# test
+test/

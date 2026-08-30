@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,7 +87,7 @@ def isolated_index(
     *,
     git_executable: str = process.DEFAULT_GIT_EXECUTABLE,
     timeout: float | None = process.DEFAULT_GIT_TIMEOUT_SECONDS,
-) -> Iterator[IsolatedIndex]:
+) -> Generator[IsolatedIndex]:
     """Context manager providing an isolated temporary index file for staging Git operations.
 
     Ensures every command within the scope uses an explicit temporary GIT_INDEX_FILE,
@@ -96,8 +96,10 @@ def isolated_index(
     """
     descriptor, raw_path = tempfile.mkstemp(prefix="protokflow-index-", suffix=".tmp")
     os.close(descriptor)
+
     index_path = Path(raw_path)
     index_path.unlink(missing_ok=True)
+
     try:
         repo = GitRepo(Path(worktree_root), git_executable, timeout)
         yield IsolatedIndex(repo, index_path)
@@ -135,6 +137,7 @@ def create_commit(
         git_executable=repo.git_executable,
         timeout=repo.timeout,
     )
+
     result = process.run_git(
         ("commit-tree", tree, "-p", parent, "-m", message),
         cwd=repo.worktree_root,
@@ -147,6 +150,7 @@ def create_commit(
         git_executable=repo.git_executable,
         timeout=repo.timeout,
     )
+
     return result.stdout.strip()
 
 
@@ -189,8 +193,10 @@ def _config_value(
         git_executable=git_executable,
         timeout=timeout,
     )
+
     if result.returncode != 0:
         return None
+
     return result.stdout.rstrip("\x00")
 
 
@@ -213,10 +219,13 @@ def update_index_entry(
         git_executable=repo.git_executable,
         timeout=repo.timeout,
     )
+
     raw_dir = git_dir.stdout
     if raw_dir.endswith("\n"):
         raw_dir = raw_dir[:-1]
+
     real_index = Path(raw_dir) / "index"
+
     process.run_git(
         _cacheinfo_vector(mode=mode, oid=oid, path=path),
         cwd=repo.worktree_root,
@@ -258,6 +267,7 @@ def update_ref_conditionally(
             current_oid=new_oid,
             stderr="",
         )
+
     current = _current_ref_oid(repo, ref)
     if current != expected_oid:
         return RefUpdateResult(
@@ -267,6 +277,7 @@ def update_ref_conditionally(
             current_oid=current,
             stderr=result.stderr,
         )
+
     raise GitCommandError(
         result.command,
         returncode=result.returncode,
@@ -288,10 +299,12 @@ def _current_ref_oid(repo: GitRepo, ref: str) -> str | None:
         git_executable=repo.git_executable,
         timeout=repo.timeout,
     )
+
     if probe.returncode == 0:
         return probe.stdout.strip()
     if probe.returncode == 1:
         return None
+
     raise GitCommandError(
         probe.command,
         returncode=probe.returncode,

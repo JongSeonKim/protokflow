@@ -35,6 +35,7 @@ def normalize_path(
     insensitive = (
         _is_case_insensitive(resolved) if case_insensitive is None else case_insensitive
     )
+
     return normalized.casefold() if insensitive else normalized
 
 
@@ -70,34 +71,32 @@ def _stable_id(
 
 @functools.cache
 def _is_case_insensitive(directory: Path) -> bool:
-    """Probe whether the filesystem hosting the directory treats case as insignificant.
+    """Probe whether the filesystem treats case as insignificant.
 
-    Creates a uniquely named hidden marker plus its swapcase twin inside the
+    Creates a uniquely named hidden marker plus its swapcase marker inside the
     directory, so the probe can never collide with a pre-existing alias and
     never depends on the directory's own name containing cased characters.
     Both markers are removed before returning; the result is cached because a
     filesystem's case behavior does not change during a process.
     """
-    marker = directory / f".protokflow-case-probe-{uuid.uuid4().hex}"
-    twin = marker.with_name(marker.name.swapcase())
-    created = False
+    marker = directory / f".case-probe-{uuid.uuid4().hex}"
+    case_swap_marker = marker.with_name(marker.name.swapcase())
+
     try:
         try:
             marker.touch()
-            created = True
-            twin.touch(exist_ok=False)
+            case_swap_marker.touch(exist_ok=False)
         except FileExistsError:
             return True
         except OSError:
             return False
         return False
     finally:
-        if created:
-            try:
-                marker.unlink(missing_ok=True)
-            except OSError:
-                pass
         try:
-            twin.unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            case_swap_marker.unlink(missing_ok=True)
         except OSError:
             pass

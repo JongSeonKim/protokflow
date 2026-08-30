@@ -68,7 +68,9 @@ def test_timeout_expiry_raises_domain_error(
     def expired_run(
         *args: object, **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
-        raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout"))
+        timeout_val = kwargs.get("timeout")
+        timeout = float(timeout_val) if isinstance(timeout_val, (int, float)) else 0.0
+        raise subprocess.TimeoutExpired(cmd=["git"], timeout=timeout)
 
     monkeypatch.setattr(process.subprocess, "run", expired_run)
 

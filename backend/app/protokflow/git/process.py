@@ -76,16 +76,22 @@ def run_git(
     FUSE mount cannot pin the calling thread forever.
     """
     command = (git_executable, *(str(argument) for argument in args))
+
     child_env = os.environ.copy()
     for key in _SANITIZED_ENV_KEYS:
         child_env.pop(key, None)
+
+    # Disable optional file-locking operations during read-only commands
     child_env["GIT_OPTIONAL_LOCKS"] = "0"
+    # Forces command to use the default POSIX/C system
     child_env["LC_ALL"] = "C"
+
     for key, value in (env or {}).items():
         if value is None:
             child_env.pop(key, None)
         else:
             child_env[key] = value
+
     try:
         completed = subprocess.run(
             command,
@@ -107,12 +113,14 @@ def run_git(
         raise GitBinaryMissingError(
             f"git executable not found: {git_executable!r}"
         ) from exc
+
     result = GitCommandResult(
         command=command,
         returncode=completed.returncode,
         stdout=completed.stdout.decode("utf-8", errors="replace"),
         stderr=completed.stderr.decode("utf-8", errors="replace"),
     )
+
     if check and result.returncode != 0:
         raise GitCommandError(
             command,
@@ -120,4 +128,5 @@ def run_git(
             stdout=result.stdout,
             stderr=result.stderr,
         )
+
     return result

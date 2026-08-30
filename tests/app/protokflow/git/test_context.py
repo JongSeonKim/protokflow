@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -76,8 +77,9 @@ def test_unborn_head_observes_symbolic_ref_without_oid(
     calls: list[tuple[str, ...]] = []
     real_run = process.subprocess.run
 
-    def recording_run(*args: object, **kwargs: object) -> object:
-        calls.append(args[0])
+    def recording_run(*args: Any, **kwargs: Any) -> Any:
+        if args and isinstance(args[0], tuple):
+            calls.append(args[0])
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr(process.subprocess, "run", recording_run)
@@ -124,8 +126,9 @@ def test_observe_checkout_forwards_timeout_bound(
     calls: list[tuple[tuple[str, ...], object]] = []
     real_run = process.subprocess.run
 
-    def recording_run(*args: object, **kwargs: object) -> object:
-        calls.append((args[0], kwargs.get("timeout")))
+    def recording_run(*args: Any, **kwargs: Any) -> Any:
+        if args and isinstance(args[0], tuple):
+            calls.append((args[0], kwargs.get("timeout")))
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr(process.subprocess, "run", recording_run)

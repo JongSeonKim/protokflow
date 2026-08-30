@@ -378,6 +378,10 @@ flowchart TB
 
 - KTD17. **프로토타입 실행은 삭제되는 `design_systems` 대신 정본 세대를 참조한다.** `design_systems`의 다중 슬러그 모델은 R5가 정본을 루트 문서 하나로 좁히면서 사라진다. 프로토타입 실행이 후보 리비전을 기준으로 실행되는 형태는 이 계획의 범위 밖이므로 정본 세대 참조로만 재배선한다. `Governs R5, R14`
 
+- KTD18. **내보내기 commit의 author·committer는 리포지토리 `--local` 설정에서 해석해 자식 프로세스에 명시 주입하고, 설정이 없으면 런타임 고정 신원으로 폴백한다.** 해석한 값은 `GIT_AUTHOR_NAME`·`GIT_AUTHOR_EMAIL`·`GIT_COMMITTER_NAME`·`GIT_COMMITTER_EMAIL`로 주입해 ambient 환경 의존을 제거하며, 고정 신원은 `Protokflow Runtime <runtime@protokflow.invalid>`를 사용한다. `commit-tree`는 hook을 실행하지 않고 `commit.gpgsign`을 존중하지 않으므로 Assumptions의 hook·서명 조건은 별도 조치 없이 충족된다. 기각한 대안: ambient Git 설정에만 의존 — 신원이 설정되지 않은 서비스 계정에서 내보내기가 `unable to auto-detect email address`로 실패한다. `Governs R19`
+
+- KTD19. **plumbing 계층은 frozen dataclass가 데이터를, 모듈 함수가 동작을 담당한다.** `GitRepo(worktree_root, git_executable, timeout)` frozen dataclass를 모든 plumbing 함수의 첫 인자로 전달한다. `IsolatedIndex`는 임시 index 경로라는 실제 상태를 보유하므로 유지하되 `GitRepo`를 품는다. 이는 `core/design_md.py`, `git/process.py`, `git/context.py`가 채택한 "모듈 함수 + frozen dataclass" 형태와 일치하며 U9의 내보내기 시퀀스 연쇄에서 인자 반복 전달을 제거한다. `backend/app/protokflow/storage/`는 `__init__.py`만 존재해 선례로 사용할 수 없다. 기각한 대안: 전면 객체지향(`RepoPlumbing` 클래스에 메서드 집중) — 내부 일관성을 위해 `context.py`·`process.py`까지 함께 바꿔야 한다 / 두 seam 공존 유지 — 이후 유닛이 서로 다른 호출 규약을 선택하게 되어 회수 비용이 커진다. `Governs R19`
+
 ### High-Level Technical Design
 
 #### 런타임 내부 구성과 소유권
@@ -652,7 +656,7 @@ flowchart LR
 
 **Goal**: checkout identity, HEAD OID, worktree·common directory 경로, 정규화된 식별자, 내보내기용 plumbing 절차를 데이터베이스와 프로토콜을 모르는 모듈로 제공한다. Git 관측과 plumbing은 `git/` 어댑터가 맡고, 식별자 계산은 순수 코어가 맡는다.
 
-**Requirements**: R10, R18, R19, R25, R26 / KTD3, KTD4, KTD7
+**Requirements**: R10, R18, R19, R25, R26 / KTD3, KTD4, KTD7, KTD18, KTD19
 
 **Dependencies**: 없음
 
@@ -662,19 +666,20 @@ flowchart LR
 - `backend/app/protokflow/git/plumbing.py` (신규)
 - `backend/app/protokflow/core/identity.py` (신규)
 - `backend/app/protokflow/error/git.py` (신규)
+- `tests/app/protokflow/git/test_process.py` (신규)
 - `tests/app/protokflow/git/test_context.py` (신규)
 - `tests/app/protokflow/git/test_plumbing.py` (신규)
 - `tests/app/protokflow/core/test_identity.py` (신규)
 - `tests/fixtures/git.py` (신규)
 
 **Approach**
-1. `process.py`에 `git` 서브프로세스 실행 래퍼를 둔다. 작업 디렉터리를 명시적으로 받고, 조회 명령에는 index를 건드리지 않는 환경 변수를 적용하며, 비정상 종료를 도메인 오류로 변환한다 (KTD3).
+1. `process.py`에 `git` 서브프로세스 실행 래퍼를 둔다. 작업 디렉터리를 명시적으로 받고, 상속된 Git 라우팅·설정 환경 변수를 제거한 위생화 환경에서 실행하며, 조회 명령에는 index를 건드리지 않는 환경 변수를 적용하고 출력을 `LC_ALL=C`로 고정하며, 시간 제한으로 바운딩하고 비정상 종료를 도메인 오류로 변환한다 (KTD3).
 2. `context.py`가 worktree 루트, Git common directory, worktree 전용 Git 디렉터리, symbolic ref, HEAD OID, detached 여부를 한 번의 관측으로 묶어 반환한다. checkout identity는 R26의 규칙대로 항상 전체 symbolic ref이며, detached HEAD는 지원하지 않는 관측 상태로 호출자에게 명시된다.
 3. `identity.py`가 경로를 symlink 해소·유니코드 정규화·플랫폼별 대소문자 정규화한 뒤 결정적 해시로 `repository_id`와 `worktree_id`를 만든다 (KTD7).
-4. `plumbing.py`가 blob 기록, 임시 index로의 tree 구성, commit 객체 생성, 예상 OID 조건부 ref 갱신, 실제 index의 단일 경로 갱신을 각각 독립 함수로 제공한다 (KTD4).
+4. `plumbing.py`가 blob 기록, 임시 index로의 tree 구성, commit 객체 생성, 예상 OID 조건부 ref 갱신, 실제 index의 단일 경로 갱신을 각각 독립 함수로 제공한다 (KTD4). 모든 함수는 frozen `GitRepo` 핸들을 첫 인자로 받으며(KTD19), commit 신원은 `--local` 설정에서 해석해 명시 주입하고 없으면 고정 신원으로 폴백한다(KTD18).
 5. `tests/fixtures/git.py`에 임시 Git 저장소와 연결 worktree를 만드는 픽스처를 둔다. 이후 모든 유닛이 이 픽스처를 재사용한다.
 
-**Patterns to follow**: `backend/app/protokflow/storage/`의 어댑터 패키지 규약, `backend/app/protokflow/core/design_md.py`의 순수 모듈 규약(SQLAlchemy·FastAPI 미의존 — `identity.py`), `backend/app/protokflow/error/`의 도메인 예외 계층 구조.
+**Patterns to follow**: `backend/app/protokflow/core/design_md.py`의 순수 모듈 규약(SQLAlchemy·FastAPI 미의존 — `identity.py`), `backend/app/protokflow/error/`의 도메인 예외 계층 구조, 모듈 함수 + frozen dataclass 구조(`git/process.py`, `git/context.py` — KTD19).
 
 **Test scenarios**
 - 임시 저장소에서 attached HEAD를 관측하면 전체 symbolic ref와 현재 commit OID를 함께 반환한다.
@@ -687,6 +692,14 @@ flowchart LR
 - 예상 OID 조건부 ref 갱신은 ref가 예상값일 때 성공하고, 다른 프로세스가 먼저 ref를 옮긴 뒤에는 실패하며 ref를 바꾸지 않는다.
 - `git`이 없는 환경을 흉내내면 도메인 오류를 던지고 원본 오류를 원인으로 보존한다.
 - Git 저장소가 아닌 디렉터리를 관측하면 명시적 오류로 거부한다.
+- `git` 서브프로세스는 시간 제한을 초과하면 명령과 제한 값을 보존한 도메인 오류로 실패한다.
+- 상속된 Git 라우팅·설정 환경 변수(`GIT_DIR`, `GIT_CONFIG_*` 등)는 자식 프로세스에 전달되지 않고, 호출 시 명시한 값이 우선하며 `None`을 전달하면 해당 변수를 제거한다.
+- 개행 문자를 포함한 worktree 경로도 위치 기반 파싱 없이 정확히 관측된다.
+- unborn HEAD에서는 symbolic ref를 반환하고 HEAD OID를 비워 반환한다.
+- CAS ref 갱신 거부는 동시 이동·삭제로 인한 재시도 가능 충돌과, ref가 예상값 그대로인 영구 실패로 구분되고 거부 결과는 현재 OID와 stderr을 보존한다.
+- 임시 index 스코프는 상속된 `GIT_INDEX_FILE`의 영향을 받지 않으며 예외 종료를 포함한 모든 경로에서 임시 index 파일을 삭제한다.
+- 대소문자 탐지는 심볼릭 링크 별칭을 오탐하지 않고, 이름에 대소문자가 없는 디렉터리에서도 올바르게 판정하며, 탐지 흔적을 남기지 않는다.
+- author·committer 신원은 리포지토리 `--local` 설정을 따르고 설정이 없으면 고정 런타임 신원으로 폴백한다 (KTD18).
 
 **Verification**: 임시 저장소와 연결 worktree를 대상으로 한 테스트가 통과하고, 모듈이 SQLAlchemy·FastAPI를 import 하지 않는다.
 

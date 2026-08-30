@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from backend.database import db
 from backend.database.url import create_database_path
 from tests.support.db import (
+    async_sqlite_url,
     cleanup_database_files,
     reset_test_database_schema,
     validate_test_database_path,
@@ -41,7 +42,7 @@ async def test_engine(_test_database_guard: None) -> AsyncGenerator[AsyncEngine,
     del _test_database_guard
     path = validate_test_database_path(_test_database_path())
     path.parent.mkdir(parents=True, exist_ok=True)
-    engine = db.create_database_async_engine(f"sqlite+aiosqlite:///{path}")
+    engine = db.create_database_async_engine(async_sqlite_url(path))
     previous_engine = db._active_engine
     db._set_engine_for_testing(engine)
     try:

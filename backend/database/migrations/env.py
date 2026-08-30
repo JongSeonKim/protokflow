@@ -18,6 +18,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from backend.app.protokflow import model as _protokflow_model  # noqa: E402, F401
 from backend.common.model import MappedBase  # noqa: E402
+from backend.database.url import to_sync_url  # noqa: E402
 
 config = context.config
 
@@ -33,7 +34,7 @@ def _resolve_database_url(config: Config) -> str:
             "database URL must be injected via backend.database.migrate or "
             "PROTOKFLOW_DATABASE_URL"
         )
-    return url.replace("sqlite+aiosqlite://", "sqlite://", 1)
+    return to_sync_url(url)
 
 
 def run_migrations_offline() -> None:

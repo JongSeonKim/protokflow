@@ -12,10 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from backend.database import db
 from backend.database.migrate import current_revision, head_revision
 from backend.database.url import create_database_path
+from tests.support.db import async_sqlite_url
 
 
 def _sqlite_url(path: Path) -> str:
-    return f"sqlite+aiosqlite:///{path.resolve()}"
+    return async_sqlite_url(path.resolve())
 
 
 async def _restore_active_slots(

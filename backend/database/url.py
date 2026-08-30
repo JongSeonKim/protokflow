@@ -55,6 +55,16 @@ def create_database_url(*, worktree_root: Path, unittest: bool = False) -> str:
     return f"sqlite+aiosqlite:///{path}"
 
 
+def to_sync_url(url: str) -> str:
+    """
+    Normalize an async SQLite URL to the synchronous dialect
+
+    :param url: sync or async SQLite connection URL
+    :return:
+    """
+    return url.replace("sqlite+aiosqlite://", "sqlite://", 1)
+
+
 def database_path_from_url(url: str) -> Path:
     """
     Extract the database file path from a SQLite connection URL

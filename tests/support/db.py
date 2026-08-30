@@ -59,6 +59,16 @@ def database_sidecar_paths(path: str | Path) -> tuple[Path, Path, Path]:
     )
 
 
+def async_sqlite_url(path: str | Path) -> str:
+    """
+    Build an async SQLite connection URL for a database path
+
+    :param path: resolved database file path
+    :return:
+    """
+    return f"sqlite+aiosqlite:///{Path(path)}"
+
+
 def cleanup_database_files(path: str | Path) -> None:
     """Remove SQLite database and sidecar files, ignoring errors if files are missing or locked."""
     for candidate in database_sidecar_paths(path):
@@ -80,7 +90,7 @@ async def reset_test_database_schema(path: str | Path) -> None:
     :return:
     """
     resolved = validate_test_database_path(path)
-    url = f"sqlite+aiosqlite:///{resolved}"
+    url = async_sqlite_url(resolved)
     await asyncio.to_thread(downgrade_database, url)
     await asyncio.to_thread(upgrade_database, url)
 

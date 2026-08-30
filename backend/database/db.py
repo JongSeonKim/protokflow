@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from backend.app.protokflow import model as _protokflow_model  # noqa: F401  # Register models for metadata
 from backend.core.conf import settings
 from backend.database.migrate import upgrade_database
 from backend.database.url import create_database_url, database_path_from_url

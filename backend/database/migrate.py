@@ -13,18 +13,15 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
+from backend.database.url import to_sync_url
+
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-
-
-def _to_sync_url(url: str) -> str:
-    """Normalize an async SQLite URL to the synchronous dialect."""
-    return url.replace("sqlite+aiosqlite://", "sqlite://", 1)
 
 
 def _migration_config(url: str) -> Config:
     config = Config()
     config.set_main_option("script_location", str(MIGRATIONS_DIR))
-    config.set_main_option("sqlalchemy.url", _to_sync_url(url))
+    config.set_main_option("sqlalchemy.url", to_sync_url(url))
     return config
 
 
@@ -53,7 +50,7 @@ def downgrade_database(url: str, *, revision: str = "base") -> None:
 
 
 def _drop_version_table(url: str) -> None:
-    engine = create_engine(_to_sync_url(url))
+    engine = create_engine(to_sync_url(url))
     try:
         with engine.begin() as connection:
             if inspect(connection).has_table("alembic_version"):
@@ -69,7 +66,7 @@ def current_revision(url: str) -> str | None:
     :param url: sync or async SQLite connection URL
     :return:
     """
-    engine = create_engine(_to_sync_url(url))
+    engine = create_engine(to_sync_url(url))
     try:
         with engine.connect() as connection:
             if not inspect(connection).has_table("alembic_version"):

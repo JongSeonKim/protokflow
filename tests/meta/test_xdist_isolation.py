@@ -37,6 +37,7 @@ from tests.support.ast_guards import (
 )
 from tests.support.db import (
     TEST_DATABASE_PREFIX,
+    async_sqlite_url,
     reset_test_database_schema,
     table_names,
 )
@@ -105,8 +106,7 @@ async def test_lifecycle_migrations_stay_on_test_database(
         names = await connection.run_sync(table_names)
     assert "design_systems" in names
 
-    url = f"sqlite+aiosqlite:///{test_path}"
-    assert current_revision(url) == head_revision()
+    assert current_revision(async_sqlite_url(test_path)) == head_revision()
     assert test_path.parent == Path(os.environ["PROTOKFLOW_HOME"]).resolve()
     assert test_path != PRODUCTION_DB_PATH
 

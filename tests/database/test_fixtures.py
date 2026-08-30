@@ -15,7 +15,7 @@ from backend.database.db import async_db_session as imported_async_db_session
 from backend.database.migrate import current_revision, head_revision
 from backend.database.url import create_database_path
 from tests.support import db as db_fixtures
-from tests.support.db import reset_test_database_schema, table_names
+from tests.support.db import async_sqlite_url, reset_test_database_schema, table_names
 
 
 STORAGE_TABLES = {
@@ -119,8 +119,7 @@ async def test_factory_proxy_begin_and_import_binding_use_test_engine(
 
     assert row is not None
     test_path = create_database_path(worktree_root=Path.cwd(), unittest=True).resolve()
-    url = f"sqlite+aiosqlite:///{test_path}"
-    assert current_revision(url) == head_revision()
+    assert current_revision(async_sqlite_url(test_path)) == head_revision()
 
 
 async def test_migration_rejects_paths_outside_test_home(tmp_path: Path) -> None:

@@ -6,14 +6,16 @@ import os
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.model import DesignSystem
 from backend.database import db
 from backend.database.db import async_db_session as imported_async_db_session
+from backend.database.migrate import current_revision, head_revision
+from backend.database.url import create_database_path
 from tests.support import db as db_fixtures
-from tests.support.db import table_names
+from tests.support.db import reset_test_database_schema, table_names
 
 
 STORAGE_TABLES = {
@@ -86,7 +88,7 @@ async def test_test_engine_path_uses_isolated_home_and_name(
     test_engine: object,
 ) -> None:
     del test_engine
-    path = db.create_database_path(unittest=True)
+    path = create_database_path(worktree_root=Path.cwd(), unittest=True)
     assert path.name.startswith("protokflow_test_")
     assert path.parent == Path(os.environ["PROTOKFLOW_HOME"]).resolve()
 
@@ -114,7 +116,17 @@ async def test_factory_proxy_begin_and_import_binding_use_test_engine(
         row = await session.scalar(
             select(DesignSystem).where(DesignSystem.slug == "proxy-route")
         )
-        schema_version = await session.scalar(text("PRAGMA user_version"))
 
     assert row is not None
-    assert schema_version == db.EXPECTED_SCHEMA_VERSION
+    test_path = create_database_path(worktree_root=Path.cwd(), unittest=True).resolve()
+    url = f"sqlite+aiosqlite:///{test_path}"
+    assert current_revision(url) == head_revision()
+
+
+async def test_migration_rejects_paths_outside_test_home(tmp_path: Path) -> None:
+    """The harness cannot run migrations against an unvalidated database path."""
+    outside = tmp_path / "outside.db"
+
+    with pytest.raises(RuntimeError, match="test database"):
+        await reset_test_database_schema(outside)
+    assert not outside.exists()

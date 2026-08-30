@@ -1,83 +1,158 @@
-"""Tests for the database lifecycle engine injection boundary."""
+"""Tests for the explicit worktree-bound database initialization boundary."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
+import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from backend.database import db
-from tests.support.db import table_names
+from backend.database.migrate import current_revision, head_revision
+from backend.database.url import create_database_path
 
 
-def _database_url(path: Path) -> str:
+def _sqlite_url(path: Path) -> str:
     return f"sqlite+aiosqlite:///{path.resolve()}"
 
 
-async def test_active_engine_defaults_to_production_singleton() -> None:
-    """Without an override, lifecycle callers use the import-time singleton."""
-    previous_engine = db._active_engine
-
-    try:
-        db._set_engine_for_testing(None)
-        assert db._get_active_engine() is db.async_engine
-    finally:
-        db._set_engine_for_testing(previous_engine)
-
-
-async def test_create_tables_uses_injected_engine_and_factory(tmp_path: Path) -> None:
-    """DDL and schema seeding stay on the swapped engine/factory pair."""
-    engine = db.create_database_async_engine(_database_url(tmp_path / "isolated.db"))
-    factory = db.create_database_async_session(engine)
-    previous_engine = db._active_engine
-    previous_factory = db._active_factory
-    db._set_engine_for_testing(engine)
-    db._set_factory_for_testing(factory)
-
-    try:
-        await db.create_tables()
-
-        async with engine.connect() as connection:
-            version = await connection.scalar(text("PRAGMA user_version"))
-        assert version == db.EXPECTED_SCHEMA_VERSION
-    finally:
-        db._set_factory_for_testing(previous_factory)
-        db._set_engine_for_testing(previous_engine)
+async def _restore_active_slots(
+    previous_engine: AsyncEngine | None,
+    previous_factory: Any,
+    *created: AsyncEngine,
+) -> None:
+    db._set_factory_for_testing(previous_factory)
+    db._set_engine_for_testing(previous_engine)
+    for engine in created:
         await engine.dispose()
 
 
-async def test_drop_tables_uses_injected_engine(tmp_path: Path) -> None:
-    """Dropping through the lifecycle boundary removes only the test schema."""
-    engine = db.create_database_async_engine(_database_url(tmp_path / "isolated.db"))
-    factory = db.create_database_async_session(engine)
+@pytest.fixture
+def isolated_database_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Isolate URL derivation from the test-home environment overrides."""
+    monkeypatch.delenv("PROTOKFLOW_HOME", raising=False)
+    monkeypatch.delenv("PROTOKFLOW_DATABASE_URL", raising=False)
+    return tmp_path
+
+
+def test_different_worktree_roots_derive_isolated_database_paths(
+    isolated_database_environment: Path,
+) -> None:
+    root = isolated_database_environment
+    first = create_database_path(worktree_root=root / "alpha")
+    second = create_database_path(worktree_root=root / "beta")
+
+    assert first == root / "alpha" / ".protokflow" / "protokflow.db"
+    assert second == root / "beta" / ".protokflow" / "protokflow.db"
+    assert first != second
+
+
+def test_database_url_override_takes_precedence_over_worktree_root(
+    isolated_database_environment: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = isolated_database_environment
+    override = f"sqlite+aiosqlite:///{root / 'override' / 'custom.db'}"
+    monkeypatch.setenv("PROTOKFLOW_DATABASE_URL", override)
+
+    assert db.resolve_database_url(worktree_root=root) == override
+    assert db.database_path_from_url(override) == root / "override" / "custom.db"
+
+
+async def test_initialize_database_migrates_and_applies_owner_only_permissions(
+    isolated_database_environment: Path,
+) -> None:
+    root = isolated_database_environment
     previous_engine = db._active_engine
     previous_factory = db._active_factory
-    db._set_engine_for_testing(engine)
-    db._set_factory_for_testing(factory)
-
+    engine: AsyncEngine | None = None
     try:
-        await db.create_tables()
-        await db.drop_tables()
+        engine = await db.initialize_database(worktree_root=root)
+        database_path = root / ".protokflow" / "protokflow.db"
 
-        async with engine.connect() as connection:
-            tables = await connection.run_sync(table_names)
-        assert tables == []
-    finally:
-        db._set_factory_for_testing(previous_factory)
-        db._set_engine_for_testing(previous_engine)
-        await engine.dispose()
-
-
-async def test_engine_hook_can_be_cleared(tmp_path: Path) -> None:
-    """Clearing the testing hook restores the production singleton."""
-    engine = db.create_database_async_engine(_database_url(tmp_path / "isolated.db"))
-    previous_engine = db._active_engine
-    try:
-        db._set_engine_for_testing(engine)
+        assert database_path.exists()
+        assert database_path.parent.stat().st_mode & 0o777 == 0o700
+        assert database_path.stat().st_mode & 0o777 == 0o600
+        assert current_revision(_sqlite_url(database_path)) == head_revision()
         assert db._get_active_engine() is engine
 
-        db._set_engine_for_testing(None)
-        assert db._get_active_engine() is db.async_engine
+        async with db.async_db_session() as session:
+            assert await session.scalar(text("SELECT 1")) == 1
     finally:
+        created = (engine,) if engine is not None else ()
+        await _restore_active_slots(previous_engine, previous_factory, *created)
+
+
+async def test_reinitialization_disposes_previous_engine(
+    isolated_database_environment: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = isolated_database_environment
+    previous_engine = db._active_engine
+    previous_factory = db._active_factory
+    second: AsyncEngine | None = None
+    try:
+        first = await db.initialize_database(worktree_root=root / "first")
+        dispose_calls: list[AsyncEngine] = []
+        original_dispose = AsyncEngine.dispose
+
+        async def dispose_probe(engine: AsyncEngine) -> None:
+            dispose_calls.append(engine)
+            await original_dispose(engine)
+
+        monkeypatch.setattr(AsyncEngine, "dispose", dispose_probe)
+        second = await db.initialize_database(worktree_root=root / "second")
+
+        assert db._get_active_engine() is second
+        assert db._get_active_engine() is not first
+        assert dispose_calls == [first]
+    finally:
+        created = (second,) if second is not None else ()
+        await _restore_active_slots(previous_engine, previous_factory, *created)
+
+
+async def test_engine_and_factory_access_before_initialization_errors() -> None:
+    previous_engine = db._active_engine
+    previous_factory = db._active_factory
+    db._set_engine_for_testing(None)
+    db._set_factory_for_testing(None)
+    try:
+        with pytest.raises(RuntimeError, match="not initialized"):
+            db._get_active_engine()
+        with pytest.raises(RuntimeError, match="not initialized"):
+            db._get_active_factory()
+        with pytest.raises(RuntimeError, match="not initialized"):
+            db.async_db_session()
+    finally:
+        db._set_factory_for_testing(previous_factory)
         db._set_engine_for_testing(previous_engine)
-        await engine.dispose()
+
+
+async def test_factory_is_exposed_only_after_migration_completes(
+    isolated_database_environment: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = isolated_database_environment
+    previous_engine = db._active_engine
+    previous_factory = db._active_factory
+    replacement: AsyncEngine | None = None
+    try:
+        await db.initialize_database(worktree_root=root / "prepared")
+        prepared_engine = db._get_active_engine()
+        engine_during_migration: list[object] = []
+        original_upgrade = db.upgrade_database
+
+        def upgrade_probe(url: str) -> None:
+            engine_during_migration.append(db._active_engine)
+            original_upgrade(url)
+
+        monkeypatch.setattr(db, "upgrade_database", upgrade_probe)
+        replacement = await db.initialize_database(worktree_root=root / "reinit")
+
+        assert engine_during_migration == [prepared_engine]
+        assert db._get_active_engine() is replacement
+        assert db._get_active_engine() is not prepared_engine
+    finally:
+        created = (replacement,) if replacement is not None else ()
+        await _restore_active_slots(previous_engine, previous_factory, *created)

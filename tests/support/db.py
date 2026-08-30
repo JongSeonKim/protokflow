@@ -7,11 +7,14 @@ and schema inspection utilities used by the test database harness in
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
 
 from sqlalchemy import Connection, inspect
+
+from backend.database.migrate import downgrade_database, upgrade_database
 
 
 # Prefix used for temporary SQLite test databases to prevent accidental production collisions.
@@ -64,6 +67,22 @@ def cleanup_database_files(path: str | Path) -> None:
         except OSError:
             # Ignore cleanup errors to avoid masking test failures.
             pass
+
+
+async def reset_test_database_schema(path: str | Path) -> None:
+    """
+    Reset an isolated test database through the real migration lifecycle
+
+    Validates the path before any migration runs so the harness cannot touch
+    databases outside the isolated test home.
+
+    :param path: isolated test database path
+    :return:
+    """
+    resolved = validate_test_database_path(path)
+    url = f"sqlite+aiosqlite:///{resolved}"
+    await asyncio.to_thread(downgrade_database, url)
+    await asyncio.to_thread(upgrade_database, url)
 
 
 def table_names(connection: Connection) -> list[str]:

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
@@ -10,7 +11,7 @@ from backend.common.exception.exception_handler import register_exception
 from backend.common.log import set_custom_logfile, setup_logging
 from backend.common.response.response_code import StandardResponseCode
 from backend.core.conf import settings
-from backend.database.db import create_tables
+from backend.database.db import initialize_database
 from starlette_context.middleware import ContextMiddleware
 from backend.middleware.access_middleware import AccessMiddleware
 from backend.middleware.i18n_middleware import I18nMiddleware
@@ -24,7 +25,8 @@ if TYPE_CHECKING:
 
 @asynccontextmanager
 async def register_init(app: FastAPI) -> AsyncGenerator[None]:
-    await create_tables()
+    # Transitional wiring: the parent U5 runtime start owner replaces this call.
+    await initialize_database(worktree_root=Path.cwd())
     yield
 
 
@@ -38,6 +40,7 @@ def register_app() -> FastAPI:
         redoc_url=settings.FASTAPI_REDOC_URL,
         openapi_url=settings.FASTAPI_OPENAPI_URL,
         default_response_class=MsgSpecJSONResponse,
+        lifespan=register_init,
     )
 
     # Register components

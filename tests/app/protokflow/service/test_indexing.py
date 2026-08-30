@@ -25,6 +25,8 @@ from backend.app.protokflow.service.design_system_service import (
 )
 from backend.app.protokflow.error.storage import TokenReparentingError
 from backend.database import db
+from backend.database.url import create_database_path
+from tests.support.db import reset_test_database_schema
 
 
 def _design_md(name: str, color: str, guide: str = "# Guide\n") -> str:
@@ -198,8 +200,9 @@ async def test_reindex_after_database_recreation_restores_systems_and_tokens(
             for system in before
         }
 
-    await db.drop_tables()
-    await db.create_tables()
+    await reset_test_database_schema(
+        create_database_path(worktree_root=Path.cwd(), unittest=True)
+    )
     await design_system_service.index_all(repo_root=tmp_path)
     after = await _systems()
     async with db.async_db_session.begin() as session:

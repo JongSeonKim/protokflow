@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
@@ -92,25 +93,39 @@ async def initialize_database(*, worktree_root: Path) -> AsyncEngine:
     """
     Initialize the worktree database and install the active engine and factory
 
-    Applies pending migrations on a worker thread before the engine and session
-    factory become visible through the active slots; re-initialization disposes
-    the previous engine.
+    Applies pending migrations on a worker thread, then publishes the engine
+    and session factory as one atomic runtime slot under a process-wide
+    initialization lock; re-initialization disposes the previous engine.
 
     :param worktree_root: repository worktree root the database belongs to
     :return:
     """
-    global _active_engine, _active_factory
-    url = resolve_database_url(worktree_root=worktree_root)
-    _apply_owner_only_storage_permissions(database_path_from_url(url))
-    await asyncio.to_thread(upgrade_database, url)
-    engine = create_database_async_engine(url)
-    factory = create_database_async_session(engine)
-    previous_engine = _active_engine
-    _active_engine = engine
-    _active_factory = factory
-    if previous_engine is not None and previous_engine is not engine:
-        await previous_engine.dispose()
-    return engine
+    global _active_runtime
+    async with _initialization_lock:
+        url = resolve_database_url(worktree_root=worktree_root)
+        _apply_owner_only_storage_permissions(database_path_from_url(url))
+        await asyncio.to_thread(upgrade_database, url)
+        engine = create_database_async_engine(url)
+        factory = create_database_async_session(engine)
+        previous = _active_runtime
+        previous_engine = previous.engine if previous is not None else None
+        _active_runtime = _DatabaseRuntime(engine=engine, factory=factory)
+        if previous_engine is not None and previous_engine is not engine:
+            await previous_engine.dispose()
+        return engine
+
+
+async def shutdown_database() -> None:
+    """
+    Dispose the active engine and clear the active runtime slot
+
+    :return:
+    """
+    global _active_runtime
+    engine = _active_runtime.engine if _active_runtime is not None else None
+    _active_runtime = None
+    if engine is not None:
+        await engine.dispose()
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
@@ -125,28 +140,43 @@ async def get_db_transaction() -> AsyncGenerator[AsyncSession]:
         yield session
 
 
-_active_engine: AsyncEngine | None = None
-_active_factory: async_sessionmaker[AsyncSession | Any] | None = None
+@dataclass(frozen=True)
+class _DatabaseRuntime:
+    """Engine and session factory published as one atomic slot."""
+
+    engine: AsyncEngine | None
+    factory: async_sessionmaker[AsyncSession | Any] | None
+
+
+_active_runtime: _DatabaseRuntime | None = None
+_initialization_lock = asyncio.Lock()
 
 
 def _get_active_engine() -> AsyncEngine:
     """Return the active engine, raising before explicit initialization."""
-    if _active_engine is None:
+    runtime = _active_runtime
+    if runtime is None or runtime.engine is None:
         raise RuntimeError("Database engine is not initialized")
-    return _active_engine
+    return runtime.engine
 
 
 def _set_engine_for_testing(engine: AsyncEngine | None) -> None:
     """Override the active engine for test harness isolation."""
-    global _active_engine
-    _active_engine = engine
+    global _active_runtime
+    factory = _active_runtime.factory if _active_runtime is not None else None
+    _active_runtime = (
+        None
+        if engine is None and factory is None
+        else _DatabaseRuntime(engine=engine, factory=factory)
+    )
 
 
 def _get_active_factory() -> async_sessionmaker[AsyncSession | Any]:
     """Return the active session factory."""
-    if _active_factory is None:
+    runtime = _active_runtime
+    if runtime is None or runtime.factory is None:
         raise RuntimeError("Database session factory is not initialized")
-    return _active_factory
+    return runtime.factory
 
 
 class _SessionFactoryProxy:
@@ -169,8 +199,13 @@ async_db_session = cast(
 
 def _set_factory_for_testing(factory: Any) -> None:
     """Override the active session factory for test harness isolation."""
-    global _active_factory
-    _active_factory = factory
+    global _active_runtime
+    engine = _active_runtime.engine if _active_runtime is not None else None
+    _active_runtime = (
+        None
+        if engine is None and factory is None
+        else _DatabaseRuntime(engine=engine, factory=factory)
+    )
 
 
 # Session dependencies

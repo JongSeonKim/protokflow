@@ -11,6 +11,14 @@ from pathlib import Path
 
 from sqlalchemy.engine import make_url
 
+_ASYNC_SQLITE_DRIVERNAME = "sqlite+aiosqlite"
+
+
+def _ensure_url_safe_path(path: Path) -> None:
+    """Reject paths that cannot survive a SQLite connection URL round trip."""
+    if "?" in str(path):
+        raise ValueError(f"database path contains URL-reserved characters: {path}")
+
 
 def create_database_path(*, worktree_root: Path, unittest: bool = False) -> Path:
     """
@@ -37,7 +45,9 @@ def create_database_path(*, worktree_root: Path, unittest: bool = False) -> Path
         filename = "_".join(parts)
     else:
         filename = "protokflow"
-    return root / f"{filename}.db"
+    path = root / f"{filename}.db"
+    _ensure_url_safe_path(path)
+    return path
 
 
 def create_database_url(*, worktree_root: Path, unittest: bool = False) -> str:
@@ -54,7 +64,21 @@ def create_database_url(*, worktree_root: Path, unittest: bool = False) -> str:
         worktree_root=worktree_root, unittest=unittest
     ).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite+aiosqlite:///{path}"
+    return async_sqlite_url(path)
+
+
+def async_sqlite_url(path: str | Path) -> str:
+    """
+    Build an async SQLite connection URL for a database file path
+
+    Single owner of the async SQLite URL template so production and the test
+    harness derive identical connection strings.
+
+    :param path: resolved database file path
+    :return:
+    """
+    url = make_url(f"{_ASYNC_SQLITE_DRIVERNAME}:///").set(database=str(Path(path)))
+    return str(url)
 
 
 def to_sync_url(url: str) -> str:
@@ -64,7 +88,7 @@ def to_sync_url(url: str) -> str:
     :param url: sync or async SQLite connection URL
     :return:
     """
-    return url.replace("sqlite+aiosqlite://", "sqlite://", 1)
+    return str(make_url(url).set(drivername="sqlite"))
 
 
 def database_path_from_url(url: str) -> Path:
@@ -75,6 +99,11 @@ def database_path_from_url(url: str) -> Path:
     :return:
     """
     database = make_url(url).database
-    if not database or database == ":memory:":
+    if (
+        not database
+        or database == ":memory:"
+        or database.startswith("file:")
+        or not Path(database).is_absolute()
+    ):
         raise ValueError(f"not a file-backed SQLite URL: {url}")
     return Path(database)

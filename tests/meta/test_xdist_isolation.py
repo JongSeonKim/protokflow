@@ -17,12 +17,14 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.protokflow.model import DesignSystem
 from backend.database import db
 from backend.database.db import async_db_session as imported_async_db_session
+from backend.database.migrate import current_revision, head_revision
+from backend.database.url import create_database_path
 from tests.conftest import PRODUCTION_DB_PATH
 from tests.support import db as db_fixtures
 from tests.support.ast_guards import (
@@ -33,7 +35,12 @@ from tests.support.ast_guards import (
     local_isolation_fixtures,
     scanned_modules,
 )
-from tests.support.db import TEST_DATABASE_PREFIX, table_names
+from tests.support.db import (
+    TEST_DATABASE_PREFIX,
+    async_sqlite_url,
+    reset_test_database_schema,
+    table_names,
+)
 
 pytestmark = pytest.mark.meta
 
@@ -71,41 +78,34 @@ def test_controller_and_worker_database_names_are_isolated(
     home = Path(os.environ["PROTOKFLOW_HOME"]).resolve()
 
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "master")
-    controller = db.create_database_path(unittest=True)
+    controller = create_database_path(worktree_root=Path.cwd(), unittest=True)
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
-    worker = db.create_database_path(unittest=True)
+    worker = create_database_path(worktree_root=Path.cwd(), unittest=True)
 
     assert controller == home / f"{TEST_DATABASE_PREFIX}{run_id}.db"
     assert worker == home / f"{TEST_DATABASE_PREFIX}{run_id}_gw0.db"
     assert controller != worker
 
 
-def test_import_time_engine_observes_the_test_database_namespace() -> None:
-    """The pytest signal is consumed before the backend singleton is built."""
-    expected = db.create_database_path(unittest=True).resolve()
-    actual = Path(str(db.async_engine.url.database)).resolve()
-
-    assert actual == expected
-    assert actual.name.startswith(TEST_DATABASE_PREFIX)
-    assert actual.parent == Path(os.environ["PROTOKFLOW_HOME"]).resolve()
+def test_module_import_binds_no_engine_singleton() -> None:
+    """Engine creation is deferred to the explicit initialization entry point."""
+    assert not hasattr(db, "async_engine")
+    assert not hasattr(db, "SQLALCHEMY_DATABASE_URL")
 
 
-async def test_lifecycle_ddl_and_schema_seed_stay_on_test_database(
+async def test_lifecycle_migrations_stay_on_test_database(
     test_db: AsyncSession,
 ) -> None:
-    """The active lifecycle engine and factory route DDL and seed writes together."""
+    """The active lifecycle engine and factory route migration writes together."""
     del test_db
-    test_path = db.create_database_path(unittest=True).resolve()
-    await db.drop_tables()
-    await db.create_tables()
+    test_path = create_database_path(worktree_root=Path.cwd(), unittest=True).resolve()
+    await reset_test_database_schema(test_path)
 
     async with db._get_active_engine().connect() as connection:
         names = await connection.run_sync(table_names)
     assert "design_systems" in names
 
-    async with imported_async_db_session() as session:
-        schema_version = await session.scalar(text("PRAGMA user_version"))
-    assert schema_version == db.EXPECTED_SCHEMA_VERSION
+    assert current_revision(async_sqlite_url(test_path)) == head_revision()
     assert test_path.parent == Path(os.environ["PROTOKFLOW_HOME"]).resolve()
     assert test_path != PRODUCTION_DB_PATH
 

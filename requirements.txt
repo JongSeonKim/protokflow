@@ -3,6 +3,8 @@
 -e .
 aiosqlite==0.22.1
     # via protokflow
+alembic==1.19.1
+    # via protokflow
 annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
@@ -42,8 +44,12 @@ librt==0.15.0 ; platform_python_implementation != 'PyPy'
     # via mypy
 loguru==0.7.3
     # via protokflow
+mako==1.4.1
+    # via alembic
 markdown-it-py==4.2.0
     # via rich
+markupsafe==3.0.3
+    # via mako
 mdurl==0.1.2
     # via markdown-it-py
 msgspec==0.21.1
@@ -95,6 +101,7 @@ ruamel-yaml==0.19.1
 ruff==0.15.22
 sqlalchemy==2.0.52
     # via
+    #   alembic
     #   protokflow
     #   sqlalchemy-crud-plus
 sqlalchemy-crud-plus==1.13.3
@@ -118,6 +125,7 @@ types-python-jose==3.5.0.20260408
 types-pyyaml==6.0.12.20260815
 typing-extensions==4.16.0
     # via
+    #   alembic
     #   cappa
     #   fastapi
     #   fastapi-pagination

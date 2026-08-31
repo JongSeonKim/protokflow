@@ -7,11 +7,17 @@ and schema inspection utilities used by the test database harness in
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
 
-from sqlalchemy import Connection, inspect
+from alembic.util.exc import CommandError
+from sqlalchemy import Connection, create_engine, inspect, text
+from sqlalchemy.exc import OperationalError
+
+from backend.database.migrate import downgrade_database, upgrade_database
+from backend.database.url import async_sqlite_url, to_sync_url
 
 
 # Prefix used for temporary SQLite test databases to prevent accidental production collisions.
@@ -64,6 +70,43 @@ def cleanup_database_files(path: str | Path) -> None:
         except OSError:
             # Ignore cleanup errors to avoid masking test failures.
             pass
+
+
+async def reset_test_database_schema(path: str | Path) -> None:
+    """
+    Reset an isolated test database through the real migration lifecycle
+
+    Validates the path before touching anything. A poisoned database left
+    by a failed run is dropped table-by-table on the same file so fixture
+    setup can always rebuild through real migrations.
+
+    :param path: isolated test database path
+    :return:
+    """
+    resolved = validate_test_database_path(path)
+    url = async_sqlite_url(resolved)
+    try:
+        await asyncio.to_thread(downgrade_database, url)
+    except CommandError, OperationalError:
+        await asyncio.to_thread(_drop_all_tables, url)
+    await asyncio.to_thread(upgrade_database, url)
+
+
+def _drop_all_tables(url: str) -> None:
+    """Drop every user table in place so a poisoned file can be rebuilt."""
+    engine = create_engine(to_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            names = connection.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name NOT LIKE 'sqlite_%'"
+                )
+            ).scalars()
+            for name in names:
+                connection.execute(text(f'DROP TABLE IF EXISTS "{name}"'))
+    finally:
+        engine.dispose()
 
 
 def table_names(connection: Connection) -> list[str]:
